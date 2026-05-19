@@ -120,7 +120,7 @@ checksum = "ace50bade8e6234aa140d9a2f552bbee1db4d353f69b8217bc503490fc1a9f26"
 [[package]]
 name = "backend-blindbit-v1"
 version = "0.1.0"
-source = "git+https://github.com/cygnet3/spdk?branch=master#d3c7f4a4645232813a08fe9cf9304e5988d9daaa"
+source = "git+https://github.com/Sosthene00/spdk?branch=psbt_definitive#38b02804174bfe1688b84683c3e5025e493200c8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -194,6 +194,12 @@ name = "bech32"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32637268377fc7b10a8c6d51de3e7fba1ce5dd371a96e342b34e6078db558e7f"
+
+[[package]]
+name = "bimap"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "230c5f1ca6a325a32553f8640d31ac9b49f2411e901e427570154868b46da4f7"
 
 [[package]]
 name = "bip39"
@@ -542,6 +548,7 @@ checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer",
  "crypto-common",
+ "subtle",
 ]
 
 [[package]]
@@ -857,6 +864,15 @@ name = "hex_lit"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3011d1213f159867b13cfd6ac92d2cd5f1345762c63be3554e84092d85a50bbd"
+
+[[package]]
+name = "hmac"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
+dependencies = [
+ "digest",
+]
 
 [[package]]
 name = "http"
@@ -1241,6 +1257,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
+name = "miniscript"
+version = "12.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c14116d8342edd3626b0f8e84df16f4e6a76dc04799ba747493403236a1b8ac5"
+dependencies = [
+ "bech32 0.11.1",
+ "bitcoin 0.32.8",
+]
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1411,6 +1437,43 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "60946a68e5f9d28b0dc1c21bb8a97ee7d018a8b322fa57838ba31cc878e22d99"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "psbt"
+version = "0.1.0"
+source = "git+https://github.com/Sosthene00/spdk?branch=psbt_definitive#1761ddf269829760e6b648be24355576aad1db94"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bitcoin 0.32.8",
+ "futures",
+ "hmac",
+ "psbt-v2 0.3.0 (git+https://github.com/Sosthene00/rust-psbt.git?branch=bip376)",
+ "rand 0.8.5",
+ "rust-dleq",
+ "secp256k1 0.29.1",
+ "serde",
+ "sha2",
+ "silentpayments",
+]
+
+[[package]]
+name = "psbt-v2"
+version = "0.3.0"
+source = "git+https://github.com/Sosthene00/rust-psbt.git?branch=bip376#73182ca1aa3e090fef5dd4e88ae098ec5f11e954"
+dependencies = [
+ "bitcoin 0.32.8",
+ "miniscript",
+]
+
+[[package]]
+name = "psbt-v2"
+version = "0.3.0"
+source = "git+https://github.com/Sosthene00/rust-psbt.git?branch=taproot_sign#f642c76cd25ac55f3ee13771f344ae6846d1d277"
+dependencies = [
+ "bitcoin 0.32.8",
+ "miniscript",
 ]
 
 [[package]]
@@ -1729,6 +1792,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust-dleq"
+version = "0.1.0"
+source = "git+https://github.com/macgyver13/rust-dleq.git?branch=master#097644a14d87c454e9bd9895de2e60992ff1ba93"
+dependencies = [
+ "bitcoin_hashes 0.14.1",
+ "cc",
+ "secp256k1 0.29.1",
+]
+
+[[package]]
 name = "rust_lib_danawallet"
 version = "0.1.0"
 dependencies = [
@@ -1946,6 +2019,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
+]
+
+[[package]]
 name = "sha3"
 version = "0.10.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1964,9 +2048,10 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 [[package]]
 name = "silentpayments"
 version = "0.5.0"
-source = "git+https://github.com/cygnet3/spdk?branch=master#d3c7f4a4645232813a08fe9cf9304e5988d9daaa"
+source = "git+https://github.com/Sosthene00/spdk?branch=psbt_definitive#38b02804174bfe1688b84683c3e5025e493200c8"
 dependencies = [
  "bech32 0.9.1",
+ "bimap",
  "bitcoin_hashes 0.13.0",
  "hex",
  "secp256k1 0.29.1",
@@ -2023,7 +2108,7 @@ dependencies = [
 [[package]]
 name = "spdk-core"
 version = "0.1.0"
-source = "git+https://github.com/cygnet3/spdk?branch=master#d3c7f4a4645232813a08fe9cf9304e5988d9daaa"
+source = "git+https://github.com/Sosthene00/spdk?branch=psbt_definitive#38b02804174bfe1688b84683c3e5025e493200c8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2036,7 +2121,7 @@ dependencies = [
 [[package]]
 name = "spdk-wallet"
 version = "0.1.0"
-source = "git+https://github.com/cygnet3/spdk?branch=master#d3c7f4a4645232813a08fe9cf9304e5988d9daaa"
+source = "git+https://github.com/Sosthene00/spdk?branch=psbt_definitive#38b02804174bfe1688b84683c3e5025e493200c8"
 dependencies = [
  "anyhow",
  "backend-blindbit-v1",
@@ -2044,6 +2129,8 @@ dependencies = [
  "bitcoin 0.32.8",
  "futures",
  "log",
+ "psbt",
+ "psbt-v2 0.3.0 (git+https://github.com/Sosthene00/rust-psbt.git?branch=taproot_sign)",
  "rayon",
  "serde",
  "silentpayments",
