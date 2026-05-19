@@ -3,6 +3,7 @@ import 'package:danawallet/data/enums/selected_fee.dart';
 import 'package:danawallet/data/models/bip353_address.dart';
 import 'package:danawallet/extensions/api_amount.dart';
 import 'package:danawallet/extensions/payment_code.dart';
+import 'package:danawallet/generated/rust/api/structs/psbt.dart';
 import 'package:danawallet/generated/rust/api/structs/recipient.dart';
 import 'package:danawallet/generated/rust/api/structs/unsigned_transaction.dart';
 import 'package:danawallet/global_functions.dart';
@@ -19,10 +20,10 @@ class ReadyToSendScreen extends StatefulWidget {
   final Recipient recipient;
   final Bip353Address? providedBip353;
   final SelectedFee fee;
-  final SilentPaymentUnsignedTransaction unsignedTx;
+  final Psbt psbt;
   const ReadyToSendScreen(
       {super.key,
-      required this.unsignedTx,
+      required this.psbt,
       required this.fee,
       required this.recipient,
       this.providedBip353});
@@ -45,7 +46,7 @@ class ReadyToSendScreenState extends State<ReadyToSendScreen> {
       final walletState = Provider.of<WalletState>(context, listen: false);
 
       final txid =
-          await walletState.signAndBroadcastUnsignedTx(widget.unsignedTx);
+          await walletState.signAndBroadcastUnsignedTx(widget.psbt);
 
       if (mounted) {
         Navigator.pushAndRemoveUntil(
@@ -91,7 +92,7 @@ class ReadyToSendScreenState extends State<ReadyToSendScreen> {
 
     String displayArrivalTime = widget.fee.toEstimatedTime;
 
-    String displayEstimatedFee = widget.unsignedTx.getFeeAmount().displayBtc();
+    String displayEstimatedFee = widget.psbt.getFeeAmount().displayBtc();
 
     return ScreenSkeleton(
         showBackButton: true,

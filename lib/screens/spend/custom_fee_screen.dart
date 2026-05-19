@@ -51,15 +51,9 @@ class _CustomFeeScreenState extends State<CustomFeeScreen> {
       // Compute fee for the currently selected rate
       final feeEstimationTx = await walletState.createUnsignedTxToThisRecipient(
           widget.recipient, _selectedFeeRate);
-      BigInt inputSum = BigInt.from(0);
-      for (var (_, utxo) in feeEstimationTx.selectedUtxos) {
-        inputSum += utxo.value.field0;
-      }
-      BigInt outputSum = BigInt.from(0);
-      for (var recipient in feeEstimationTx.recipients) {
-        outputSum += recipient.amount.field0;
-      }
-      _feeAmounts[_selectedFeeRate] = Amount(field0: inputSum - outputSum);
+
+      final fundedTx = await walletState.fillUpInputsFundingUtxo(feeEstimationTx);
+      _feeAmounts[_selectedFeeRate] = fundedTx.getFeeAmount();
 
       if (mounted) {
         setState(() {
@@ -101,7 +95,7 @@ class _CustomFeeScreenState extends State<CustomFeeScreen> {
           ReadyToSendScreen(
             recipient: updatedRecipient,
             fee: SelectedFee.custom,
-            unsignedTx: unsignedTx,
+            psbt: unsignedTx,
           ));
     }
   }

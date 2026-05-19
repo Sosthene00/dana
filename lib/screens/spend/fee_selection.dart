@@ -54,15 +54,9 @@ class FeeSelectionScreenState extends State<FeeSelectionScreen> {
       final feerate = fee.getFeeRate(currentFeeRates);
       final feeEstimationTx = await walletState.createUnsignedTxToThisRecipient(
           widget.recipient, feerate);
-      BigInt inputSum = BigInt.from(0);
-      for (var (_, utxo) in feeEstimationTx.selectedUtxos) {
-        inputSum += utxo.value.field0;
-      }
-      BigInt outputSum = BigInt.from(0);
-      for (var recipient in feeEstimationTx.recipients) {
-        outputSum += recipient.amount.field0;
-      }
-      _feeAmounts[fee] = Amount(field0: inputSum - outputSum);
+      // We need to add the funding utxo to be able to compute fees
+      final fundedTx = await walletState.fillUpInputsFundingUtxo(feeEstimationTx);
+      _feeAmounts[fee] = fundedTx.getFeeAmount();
     }
 
     setState(() {
@@ -76,13 +70,14 @@ class FeeSelectionScreenState extends State<FeeSelectionScreen> {
 
     final feerate = _selected.getFeeRate(_currentFeeRates!);
 
-    final unsignedTx = await walletState.createUnsignedTxToThisRecipient(
+    final newTx = await walletState.createUnsignedTxToThisRecipient(
         widget.recipient, feerate);
+    final fundedTx = await walletState.fillUpInputsFundingUtxo(newTx);
 
     // update the send amount to the actual sent amount (can be different e.g. dust)
     final updatedRecipient = Recipient(
       paymentCode: widget.recipient.paymentCode,
-      amount: unsignedTx.getSendAmount(changeCode: changeCode),
+      amount: fundedTx.getSendAmount(changeCode: changeCode),
     );
 
     if (mounted) {
@@ -92,7 +87,7 @@ class FeeSelectionScreenState extends State<FeeSelectionScreen> {
             recipient: updatedRecipient,
             providedBip353: widget.providedBip353,
             fee: _selected,
-            unsignedTx: unsignedTx,
+            psbt: fundedTx,
           ));
     }
   }
