@@ -5,7 +5,6 @@ import 'package:danawallet/extensions/api_amount.dart';
 import 'package:danawallet/extensions/payment_code.dart';
 import 'package:danawallet/generated/rust/api/structs/psbt.dart';
 import 'package:danawallet/generated/rust/api/structs/recipient.dart';
-import 'package:danawallet/generated/rust/api/structs/unsigned_transaction.dart';
 import 'package:danawallet/global_functions.dart';
 import 'package:danawallet/states/contacts_state.dart';
 import 'package:danawallet/widgets/skeletons/screen_skeleton.dart';

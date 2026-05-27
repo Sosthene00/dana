@@ -5,4 +5,4 @@ pub mod outpoint;
 pub mod owned_output;
 pub mod psbt;
 pub mod recipient;
-pub mod unsigned_transaction;
+// pub mod unsigned_transaction;
