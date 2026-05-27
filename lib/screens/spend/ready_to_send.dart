@@ -44,8 +44,7 @@ class ReadyToSendScreenState extends State<ReadyToSendScreen> {
     try {
       final walletState = Provider.of<WalletState>(context, listen: false);
 
-      final txid =
-          await walletState.signAndBroadcastUnsignedTx(widget.psbt);
+      final txid = await walletState.signAndBroadcastUnsignedTx(widget.psbt);
 
       if (mounted) {
         Navigator.pushAndRemoveUntil(

@@ -55,7 +55,8 @@ class FeeSelectionScreenState extends State<FeeSelectionScreen> {
       final feeEstimationTx = await walletState.createUnsignedTxToThisRecipient(
           widget.recipient, feerate);
       // We need to add the funding utxo to be able to compute fees
-      final fundedTx = await walletState.fillUpInputsFundingUtxo(feeEstimationTx);
+      final fundedTx =
+          await walletState.fillUpInputsFundingUtxo(feeEstimationTx);
       _feeAmounts[fee] = fundedTx.getFeeAmount();
     }
 

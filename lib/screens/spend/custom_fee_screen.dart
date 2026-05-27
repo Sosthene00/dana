@@ -52,7 +52,8 @@ class _CustomFeeScreenState extends State<CustomFeeScreen> {
       final feeEstimationTx = await walletState.createUnsignedTxToThisRecipient(
           widget.recipient, _selectedFeeRate);
 
-      final fundedTx = await walletState.fillUpInputsFundingUtxo(feeEstimationTx);
+      final fundedTx =
+          await walletState.fillUpInputsFundingUtxo(feeEstimationTx);
       _feeAmounts[_selectedFeeRate] = fundedTx.getFeeAmount();
 
       if (mounted) {
