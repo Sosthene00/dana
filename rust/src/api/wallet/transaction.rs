@@ -4,19 +4,19 @@ use crate::api::structs::network::Network;
 use crate::api::structs::owned_output::OwnedOutput;
 use crate::api::structs::psbt::Psbt;
 use crate::api::structs::recipient::Recipient;
-use crate::api::structs::unsigned_transaction::SilentPaymentUnsignedTransaction;
 
 use anyhow::Result;
 use bip39::rand::{thread_rng, RngCore};
 use spdk_wallet::backend_blindbit_v1::BlindbitClient;
 use spdk_wallet::bitcoin::bip32::{DerivationPath, Fingerprint};
+use spdk_wallet::bitcoin::consensus::encode::serialize_hex;
 use spdk_wallet::bitcoin::key::{Keypair, Secp256k1};
 use spdk_wallet::bitcoin::secp256k1::{PublicKey, Scalar};
-use spdk_wallet::bitcoin::{consensus::serialize, hex::DisplayHex, OutPoint};
+use spdk_wallet::bitcoin::OutPoint;
 use spdk_wallet::bitcoin::{CompressedPublicKey, ScriptBuf, TxOut};
 use spdk_wallet::client::{FeeRate, RecipientAddress};
 use spdk_wallet::psbt::crypto::dleq::dleq_generate_proof;
-use spdk_wallet::psbt::roles::Bip375OutputConstructorExt;
+use spdk_wallet::psbt::roles::{Bip375OutputConstructorExt, SignerPsbtExt};
 use spdk_wallet::silentpayments::utils::common::Raw;
 use spdk_wallet::silentpayments::utils::sending::TypedSecretKey;
 use spdk_wallet::updater::DiscoveredOutput;
@@ -259,25 +259,44 @@ impl SpWallet {
     }
 
     #[flutter_rust_bridge::frb(sync)]
+    pub fn aggregate_ecdh_shares(&self, psbt: Psbt) -> Result<Psbt> {
+        let mut psbt: spdk_wallet::psbt::core::Psbt = psbt.into();
+        let secp = Secp256k1::new();
+        psbt.aggregate_ecdh_shares(&secp)?;
+        Ok((psbt.into()))
+    }
+
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn fill_up_outputs_key(&self, psbt: Psbt) -> Result<Psbt> {
+        let mut psbt: spdk_wallet::psbt::core::Psbt = psbt.into();
+        let secp = Secp256k1::new();
+        let outputs = psbt.compute_sp_outputs(&secp)?;
+        psbt.set_sp_scriptpubkey(outputs)?;
+        Ok((psbt.into()))
+    }
+
+    #[flutter_rust_bridge::frb(sync)]
     pub fn sign_transaction(
         &self,
-        unsigned_transaction: SilentPaymentUnsignedTransaction,
-    ) -> Result<String> {
-        let mut aux_rand = [0u8; 32];
-
-        let mut rng = thread_rng();
-        rng.fill_bytes(&mut aux_rand);
-
-        let client = &self.client;
-        let tx = client.sign_transaction(unsigned_transaction.into(), &aux_rand)?;
-        Ok(serialize(&tx).to_lower_hex_string())
+        psbt: Psbt,
+    ) -> Result<Psbt> {
+        let psbt: spdk_wallet::psbt::core::Psbt = psbt.into();
+        let signed_psbt = self.client.sign_transaction(psbt)?;
+        Ok(signed_psbt.into())
     }
 
     #[flutter_rust_bridge::frb(sync)]
     pub fn finalize_transaction(psbt: Psbt) -> Result<Psbt> {
-        // let res = SpClient::finalize_transaction(psbt.into())?;
-        // Ok(res.into())
-        Ok(psbt)
+        let mut psbt: spdk_wallet::psbt::core::Psbt = psbt.into();
+        psbt.finalize()?;
+        Ok(psbt.into())
+    }
+
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn extract_tx(psbt: Psbt) -> Result<String> {
+        let psbt: spdk_wallet::psbt::core::Psbt = psbt.into();
+        let tx = psbt.extract_tx()?;
+        Ok(serialize_hex(&tx))
     }
 
     // note: should only be used when using regtest, else there is privacy loss!
