@@ -276,10 +276,7 @@ impl SpWallet {
     }
 
     #[flutter_rust_bridge::frb(sync)]
-    pub fn sign_transaction(
-        &self,
-        psbt: Psbt,
-    ) -> Result<Psbt> {
+    pub fn sign_transaction(&self, psbt: Psbt) -> Result<Psbt> {
         let psbt: spdk_wallet::psbt::core::Psbt = psbt.into();
         let signed_psbt = self.client.sign_transaction(psbt)?;
         Ok(signed_psbt.into())
