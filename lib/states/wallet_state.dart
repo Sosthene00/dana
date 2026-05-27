@@ -251,7 +251,8 @@ class WalletState extends ChangeNotifier {
     final wallet = await getWalletFromSecureStorage();
 
     if (recipient.amount.field0 < amount.field0 - BigInt.from(546)) {
-      return wallet.createNewTransaction(
+      return Psbt.createNewTransaction(
+          wallet: wallet,
           ownedOutputs: unspentOutputs,
           apiRecipients: [
             recipient,
@@ -259,7 +260,8 @@ class WalletState extends ChangeNotifier {
           feerate: feerate.toDouble(),
           network: network);
     } else {
-      return wallet.createDrainTransaction(
+      return Psbt.createDrainTransaction(
+          wallet: wallet,
           ownedOutputs: unspentOutputs,
           wipeAddress: recipient.paymentCode,
           feerate: feerate.toDouble(),
@@ -269,63 +271,64 @@ class WalletState extends ChangeNotifier {
 
   Future<Psbt> fillUpInputsFundingUtxo(Psbt psbt) async {
     final wallet = await getWalletFromSecureStorage();
-    return wallet.fillUpInputs(psbt: psbt, ownedOutputs: unspentOutputs);
+    return psbt.fillUpInputs(wallet: wallet, ownedOutputs: unspentOutputs);
   }
 
-  Future<String> signAndBroadcastUnsignedTx(
-      Psbt psbt) async {
-    final selectedOutpoints = psbt.getSelectedUtxos();
+  Future<String> signAndBroadcastUnsignedTx(Psbt psbt) async {
+    final wallet = await getWalletFromSecureStorage();
 
-    // final recipients = psbt.getRecipients();
+    final aggregatedPsbt = psbt.aggregateEcdhShares();
 
-    // final finalizedTx =
-    //     SpWallet.finalizeTransaction(unsignedTransaction: unsignedTx);
+    final filledOutputsPsbt = aggregatedPsbt.fillUpOutputsKey();
 
-    // final wallet = await getWalletFromSecureStorage();
+    final signedPsbt = filledOutputsPsbt.signTransaction(wallet: wallet);
 
-    // final signedTx = wallet.signTransaction(unsignedTransaction: finalizedTx);
+    final finalizedPsbt = signedPsbt.finalizeTransaction();
 
-    // Logger().d("signed tx: $signedTx");
+    final selectedOutpoints = finalizedPsbt.getSelectedUtxos();
+    final recipients = finalizedPsbt.getRecipients(network: network);
 
-    throw Exception("Not implemented");
+    final tx = finalizedPsbt.extractTx();
 
-    // String txid;
-    // try {
-    //   switch (network) {
-    //     case Network.mainnet:
-    //       txid = await SpWallet.broadcastTx(tx: signedTx, network: network);
-    //       break;
-    //     case Network.signet:
-    //       txid = await MempoolApiRepository(network: network)
-    //           .postTransaction(signedTx);
-    //       break;
-    //     case Network.regtest:
-    //       final blindbitUrl =
-    //           await SettingsRepository.instance.getBlindbitUrl() ??
-    //               Network.regtest.defaultBlindbitUrl;
-    //       txid = await SpWallet.broadcastUsingBlindbit(
-    //           blindbitUrl: blindbitUrl, tx: signedTx);
-    //       break;
-    //     default:
-    //       throw Exception("Unsupported network");
-    //   }
-    // } catch (e) {
-    //   Logger().e('Failed to broadcast transaction: $e');
-    //   throw Exception(
-    //       'Unable to broadcast transaction. Please check your connection and try again.');
-    // }
+    Logger().d("signed tx: $tx");
 
-    // await transactionsRepository.addOutgoingTransaction(
-    //   txid: txid,
-    //   spentOutpoints: selectedOutpoints,
-    //   recipients: recipients,
-    // );
+    String txid;
+    try {
+      switch (network) {
+        case Network.mainnet:
+          txid = await SpWallet.broadcastTx(tx: tx, network: network);
+          break;
+        case Network.signet:
+          txid = await MempoolApiRepository(network: network)
+              .postTransaction(tx);
+          break;
+        case Network.regtest:
+          final blindbitUrl =
+              await SettingsRepository.instance.getBlindbitUrl() ??
+                  Network.regtest.defaultBlindbitUrl;
+          txid = await SpWallet.broadcastUsingBlindbit(
+              blindbitUrl: blindbitUrl, tx: tx);
+          break;
+        default:
+          throw Exception("Unsupported network");
+      }
+    } catch (e) {
+      Logger().e('Failed to broadcast transaction: $e');
+      throw Exception(
+          'Unable to broadcast transaction. Please check your connection and try again.');
+    }
 
-    // // refresh variables and notify listeners
-    // await _updateWalletState();
-    // notifyListeners();
+    await transactionsRepository.addOutgoingTransaction(
+      txid: txid,
+      spentOutpoints: selectedOutpoints,
+      recipients: recipients,
+    );
 
-    // return txid;
+    // refresh variables and notify listeners
+    await _updateWalletState();
+    notifyListeners();
+
+    return txid;
   }
 
   Future<String?> createSuggestedUsername() async {
