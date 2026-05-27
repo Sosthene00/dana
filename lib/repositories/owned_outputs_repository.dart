@@ -85,6 +85,62 @@ class OwnedOutputsRepository {
         .toList();
   }
 
+  /// Get all owned outputs that were spent as inputs to a given transaction.
+  /// Useful for key-recovery: these outputs have known tweaks, so their
+  /// spending private keys can be recomputed via [SpWallet.getSpendingKeysForTxid].
+  Future<List<OwnedOutput>> getSpentOutputsForTxid(String spendingTxid) async {
+    final db = await _db;
+    final rows = await db.rawQuery('''
+      SELECT o.*
+      FROM owned_outputs o
+      JOIN tx_spent_outpoints s ON s.outpoint_txid = o.txid AND s.outpoint_vout = o.vout
+      JOIN transactions t ON t.id = s.transaction_id
+      WHERE t.txid = ?
+    ''', [spendingTxid]);
+
+    final result = <OwnedOutput>[];
+    for (final row in rows) {
+      final labelBytes = row['label'] as Uint8List?;
+      U8Array32? label;
+      if (labelBytes != null) {
+        label = U8Array32(labelBytes);
+      }
+
+      result.add(OwnedOutput(
+        outpoint:
+            OutPoint(txid: row['txid'] as String, vout: row['vout'] as int),
+        tweak: U8Array32(row['tweak'] as Uint8List),
+        amount: AmountExtension.fromDbValue(row['amount_sat']),
+        script: row['script'] as Uint8List,
+        label: label,
+      ));
+    }
+    return result;
+  }
+
+  /// Fetch a single output by outpoint regardless of whether it has been spent.
+  Future<OwnedOutput?> getOutputByOutpoint(OutPoint outpoint) async {
+    final db = await _db;
+    final rows = await db.rawQuery('''
+      SELECT * FROM owned_outputs WHERE txid = ? AND vout = ?
+    ''', [outpoint.txid, outpoint.vout]);
+
+    if (rows.isEmpty) return null;
+    final row = rows.first;
+    final labelBytes = row['label'] as Uint8List?;
+    U8Array32? label;
+    if (labelBytes != null) {
+      label = U8Array32(labelBytes);
+    }
+    return OwnedOutput(
+      outpoint: OutPoint(txid: row['txid'] as String, vout: row['vout'] as int),
+      tweak: U8Array32(row['tweak'] as Uint8List),
+      amount: AmountExtension.fromDbValue(row['amount_sat']),
+      script: row['script'] as Uint8List,
+      label: label,
+    );
+  }
+
   /// Get amount for a specific outpoint.
   Future<int?> getOutputAmount(OutPoint outpoint) async {
     final db = await _db;
