@@ -125,14 +125,15 @@ impl Psbt {
     }
 
     #[frb(sync)]
-    pub fn get_selected_utxos(&self) -> Result<Vec<OutPoint>> {
+    pub fn get_selected_utxos(&self) -> Vec<OutPoint> {
         let psbt: spdk_wallet::psbt::core::Psbt = self.into();
-        Ok(psbt
+        psbt
             .inputs
             .iter()
             .map(|input| {
                 bitcoin::OutPoint::new(input.previous_txid, input.spent_output_index).into()
             })
-            .collect())
+            .collect()
+    }
     }
 }

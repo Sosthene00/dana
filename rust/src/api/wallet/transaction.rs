@@ -110,7 +110,7 @@ impl SpWallet {
     #[flutter_rust_bridge::frb(sync)]
     pub fn fill_up_inputs(&self, psbt: Psbt, owned_outputs: Vec<OwnedOutput>) -> Result<Psbt> {
         let selected_utxos: HashSet<crate::api::structs::outpoint::OutPoint> = psbt
-            .get_selected_utxos()?
+            .get_selected_utxos()
             .into_iter()
             .map(|o| o.into())
             .collect();
