@@ -1,11 +1,16 @@
 use anyhow::{Error, Result};
 use flutter_rust_bridge::frb;
-use spdk_wallet::psbt::roles::Bip375OutputConstructorExt;
+use spdk_wallet::bitcoin::params::Params;
+use spdk_wallet::bitcoin::Address;
+use spdk_wallet::silentpayments;
+use spdk_wallet::silentpayments::utils::common::SILENT_PAYMENT_ADDRESS_BYTE_LEN;
 use spdk_wallet::{
     bitcoin::{self},
     silentpayments::SilentPaymentAddress,
 };
 
+use crate::api::structs::network::Network;
+use crate::api::structs::recipient::Recipient;
 use crate::api::structs::{amount::Amount, outpoint::OutPoint};
 
 pub struct Psbt(pub Vec<u8>);
@@ -60,7 +65,7 @@ impl Psbt {
             .iter()
             .filter_map(|o| {
                 if let Some(sp_info) = &o.sp_v0_info {
-                    if sp_info.as_slice()[..33] == *change_scan_key 
+                    if sp_info.as_slice()[..33] == *change_scan_key
                         && sp_info.as_slice()[33..] == *change_spend_key
                     {
                         return None;
@@ -85,7 +90,7 @@ impl Psbt {
             .iter()
             .filter_map(|o| {
                 if let Some(sp_info) = &o.sp_v0_info {
-                    if sp_info.as_slice()[..33] == *change_scan_key 
+                    if sp_info.as_slice()[..33] == *change_scan_key
                         && sp_info.as_slice()[33..] == *change_spend_key
                     {
                         return Some(o.amount);
@@ -127,13 +132,50 @@ impl Psbt {
     #[frb(sync)]
     pub fn get_selected_utxos(&self) -> Vec<OutPoint> {
         let psbt: spdk_wallet::psbt::core::Psbt = self.into();
-        psbt
-            .inputs
+        psbt.inputs
             .iter()
             .map(|input| {
                 bitcoin::OutPoint::new(input.previous_txid, input.spent_output_index).into()
             })
             .collect()
     }
+
+    #[frb(sync)]
+    pub fn get_recipients(&self, network: Network) -> Result<Vec<Recipient>> {
+        let psbt: spdk_wallet::psbt::core::Psbt = self.into();
+        let bitcoin_network: bitcoin::Network = network.into();
+        let sp_network = silentpayments::Network::try_from(bitcoin_network.to_core_arg())
+            .expect("Can't fail that one");
+        let recipients: Result<Vec<Recipient>> = psbt
+            .outputs
+            .iter()
+            .map(|o| -> Result<Recipient> {
+                if let Some(sp_info) = &o.sp_v0_info {
+                    let mut sp_info_array = [0u8; SILENT_PAYMENT_ADDRESS_BYTE_LEN];
+                    if sp_info.len() != SILENT_PAYMENT_ADDRESS_BYTE_LEN - 1 {
+                        return Err(Error::msg("Invalid SP info length"));
+                    }
+                    sp_info_array[1..].copy_from_slice(sp_info.as_slice());
+                    Ok(Recipient {
+                        payment_code: SilentPaymentAddress::try_from_byte_array(
+                            &sp_info_array,
+                            sp_network,
+                        )?
+                        .to_string(),
+                        amount: o.amount.into(),
+                    })
+                } else if !o.script_pubkey.is_empty() {
+                    let address =
+                        Address::from_script(&o.script_pubkey, Params::from(bitcoin_network))?;
+                    Ok(Recipient {
+                        payment_code: address.to_string(),
+                        amount: o.amount.into(),
+                    })
+                } else {
+                    Err(Error::msg("Invalid output state"))
+                }
+            })
+            .collect();
+        Ok(recipients?)
     }
 }
