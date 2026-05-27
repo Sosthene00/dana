@@ -50,15 +50,18 @@ impl Psbt {
     #[frb(sync)]
     pub fn get_send_amount(&self, change_code: String) -> Result<Amount> {
         let psbt: spdk_wallet::psbt::core::Psbt = self.into();
-        let change_sp_code = SilentPaymentAddress::try_from(change_code.as_str()).unwrap();
+        let change_sp_code = SilentPaymentAddress::try_from(change_code.as_str())?;
+        let change_sp_code_bytes = change_sp_code.to_byte_array();
+        let change_scan_key: &[u8] = &change_sp_code_bytes[1..34];
+        let change_spend_key: &[u8] = &change_sp_code_bytes[34..];
 
         let amounts: Vec<_> = psbt
             .outputs
             .iter()
             .filter_map(|o| {
-                if let Some((scan_key, spend_key)) = o.get_sp_info() {
-                    if scan_key == change_sp_code.get_scan_key()
-                        && spend_key == change_sp_code.get_spend_key()
+                if let Some(sp_info) = &o.sp_v0_info {
+                    if sp_info.as_slice()[..33] == *change_scan_key 
+                        && sp_info.as_slice()[33..] == *change_spend_key
                     {
                         return None;
                     }
@@ -72,20 +75,23 @@ impl Psbt {
     #[frb(sync)]
     pub fn get_change_amount(&self, change_code: String) -> Result<Amount> {
         let psbt: spdk_wallet::psbt::core::Psbt = self.into();
-        let change_sp_code = SilentPaymentAddress::try_from(change_code.as_str()).unwrap();
+        let change_sp_code = SilentPaymentAddress::try_from(change_code.as_str())?;
+        let change_sp_code_bytes = change_sp_code.to_byte_array();
+        let change_scan_key: &[u8] = &change_sp_code_bytes[1..34];
+        let change_spend_key: &[u8] = &change_sp_code_bytes[34..];
 
         let amounts: Vec<_> = psbt
             .outputs
             .iter()
             .filter_map(|o| {
-                if let Some((scan_key, spend_key)) = o.get_sp_info() {
-                    if scan_key == change_sp_code.get_scan_key()
-                        && spend_key == change_sp_code.get_spend_key()
+                if let Some(sp_info) = &o.sp_v0_info {
+                    if sp_info.as_slice()[..33] == *change_scan_key 
+                        && sp_info.as_slice()[33..] == *change_spend_key
                     {
-                        return None;
+                        return Some(o.amount);
                     }
                 }
-                Some(o.amount)
+                None
             })
             .collect();
         Self::add_amounts(&amounts).map(|a| a.into())
