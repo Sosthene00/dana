@@ -46,6 +46,18 @@ impl SpWallet {
     pub fn get_spend_key(&self) -> ApiSpendKey {
         ApiSpendKey(self.client.get_spend_key())
     }
+
+    pub fn get_client(&self) -> &SpClient {
+        &self.client
+    }
+
+    pub fn get_fingerprint(&self) -> Option<Fingerprint> {
+        self.fingerprint.map(Into::into)
+    }
+
+    pub fn get_derivation_path(&self) -> Option<DerivationPath> {
+        self.derivation_path.clone().map(Into::into)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
