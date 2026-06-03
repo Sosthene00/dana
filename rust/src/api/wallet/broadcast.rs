@@ -1,7 +1,9 @@
-use crate::api::structs::network::Network;
+use crate::api::structs::{
+    network::Network,
+};
 
 use anyhow::Result;
-use spdk_wallet::backend_blindbit_v1::BlindbitClient;
+use spdk_wallet::{backend_blindbit_v1::BlindbitClient};
 
 use super::SpWallet;
 

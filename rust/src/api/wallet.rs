@@ -1,7 +1,7 @@
 mod info;
 pub mod setup;
 mod sync;
-mod transaction;
+mod broadcast;
 
 use crate::api::structs::network::Network;
 use anyhow::Result;
