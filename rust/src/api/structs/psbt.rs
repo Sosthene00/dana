@@ -3,28 +3,33 @@ use std::collections::HashSet;
 use anyhow::{Error, Result};
 use flutter_rust_bridge::frb;
 use rand::{RngCore, rng};
+use spdk_wallet::{DATA_CARRIER_SIZE, silentpayments};
 use spdk_wallet::bitcoin::bip32::{DerivationPath, Fingerprint};
 use spdk_wallet::bitcoin::consensus::encode::serialize_hex;
 use spdk_wallet::bitcoin::key::{Keypair, Secp256k1};
 use spdk_wallet::bitcoin::params::Params;
+use spdk_wallet::bitcoin::script::PushBytesBuf;
 use spdk_wallet::bitcoin::{Address, CompressedPublicKey, ScriptBuf, TxOut};
 use spdk_wallet::bitcoin::secp256k1::{PublicKey, Scalar};
-use spdk_wallet::client::{FeeRate, RecipientAddress};
-use spdk_wallet::psbt::crypto::dleq_generate_proof;
-use spdk_wallet::psbt::roles::SignerPsbtExt;
-use spdk_wallet::silentpayments;
+use spdk_wallet::client::RecipientAddress;
+use spdk_wallet::psbt::core::Output;
+use spdk_wallet::psbt::core::utils::to_psbt_dleq;
+use spdk_wallet::psbt::{self, generate_dleq_proof};
+use spdk_wallet::psbt::roles::{ConstructorPsbtExt, ExtractorPsbtExt, InputWitnessFinalizerPsbtExt, SignerPsbtExt};
 use spdk_wallet::silentpayments::utils::common::{Raw, SILENT_PAYMENT_ADDRESS_BYTE_LEN};
 use spdk_wallet::silentpayments::utils::sending::TypedSecretKey;
-use spdk_wallet::updater::DiscoveredOutput;
 use spdk_wallet::{
     bitcoin::{self},
     silentpayments::SilentPaymentAddress,
 };
 
 use crate::api::structs::network::Network;
+use crate::drain_change_split::random_split_sats;
 use crate::api::structs::owned_output::OwnedOutput;
 use crate::api::structs::recipient::Recipient;
-use crate::api::structs::{amount::Amount, outpoint::OutPoint};
+use crate::api::structs::{
+    amount::Amount, input_selection::InputSelection, outpoint::OutPoint,
+};
 use crate::api::wallet::SpWallet;
 
 pub struct Psbt(pub Vec<u8>);
@@ -193,82 +198,153 @@ impl Psbt {
         Ok(recipients?)
     }
 
-    #[frb(sync)]
-    pub fn create_new_transaction(
-        wallet: SpWallet,
-        owned_outputs: Vec<OwnedOutput>,
-        api_recipients: Vec<Recipient>,
-        feerate: f32,
-        network: Network,
-    ) -> Result<Psbt> {
-        let client = wallet.get_client();
-        let available_utxos: Result<Vec<(bitcoin::OutPoint, DiscoveredOutput)>> = owned_outputs
-            .into_iter()
-            .map(|output| {
-                let outpoint = output.outpoint.into();
-                let label = match output.label {
-                    Some(l) => Some(Scalar::from_be_bytes(l)?.into()),
-                    None => None,
-                };
-                let output = DiscoveredOutput {
-                    tweak: Scalar::from_be_bytes(output.tweak)?,
-                    value: output.amount.into(),
-                    script_pubkey: ScriptBuf::from_bytes(output.script),
-                    label,
-                };
-                Ok((outpoint, output))
-            })
-            .collect();
-        let recipients: Vec<spdk_wallet::client::Recipient> = api_recipients
+    fn recipients_to_outputs(recipients: Vec<Recipient>, network: Network) -> Result<Vec<Output>> {
+        let recipients: Vec<spdk_wallet::client::Recipient> = recipients
             .into_iter()
             .map(|r| r.try_into().unwrap())
             .collect();
-        let res = client.create_new_transaction(
-            available_utxos?,
-            recipients,
-            FeeRate::from_sat_per_vb(feerate),
-            network.into(),
-        )?;
 
-        Ok(res.into())
+        let address_sp_network = match network {
+            Network::Mainnet => silentpayments::Network::Mainnet,
+            Network::Testnet3 | Network::Testnet4 | Network::Signet => silentpayments::Network::Testnet,
+            Network::Regtest => silentpayments::Network::Regtest,
+        };
+
+        let network: bitcoin::Network = network.into();
+        let outputs: Vec<Output> = recipients
+            .iter()
+            .map(|recipient| match &recipient.address {
+                RecipientAddress::LegacyAddress(unchecked_address) => {
+                    let amount = recipient.amount;
+                    let script_pubkey = unchecked_address
+                        .clone()
+                        .require_network(network.into())?
+                        .script_pubkey();
+
+                    let output = Output {
+                        script_pubkey,
+                        amount,
+                        ..Default::default()
+                    };
+
+                    Ok(output)
+                }
+                RecipientAddress::SpAddress(sp_address) => {
+                    let amount = recipient.amount;
+                    if sp_address.get_network() != address_sp_network {
+                        return Err(Error::msg(format!(
+                            "Wrong network for address {}",
+                            sp_address
+                        )));
+                    }
+
+                    let mut sp_v0_info = [0u8; 66];
+                    sp_v0_info.copy_from_slice(&sp_address.to_byte_array()[1..]);
+
+                    let output = Output {
+                        sp_v0_info: Some(sp_v0_info),
+                        amount,
+                        ..Default::default()
+                    };
+
+                    Ok(output)
+                }
+                RecipientAddress::Data(data) => {
+                    let amount = recipient.amount;
+                    let data_len = data.len();
+                    if amount > spdk_wallet::bitcoin::Amount::ZERO {
+                        Err(Error::msg("Data output must have an amount of 0!"))
+                    } else if data_len > DATA_CARRIER_SIZE {
+                        Err(Error::msg(format!(
+                            "Can't embed data of length {}. Max length: {}",
+                            data_len, DATA_CARRIER_SIZE
+                        )))
+                    } else if data_len == 0 {
+                        Err(Error::msg(format!(
+                            "No data to embed"
+                        ))) 
+                    } else {
+                        let mut op_return = PushBytesBuf::with_capacity(data_len);
+                        op_return.extend_from_slice(data)?;
+                        let script_pubkey = ScriptBuf::new_op_return(op_return);
+
+                        let output = Output {
+                            script_pubkey,
+                            amount,
+                            ..Default::default()
+                        };
+
+                        Ok(output)
+                    }
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(outputs)
+    }
+
+    #[frb(sync)]
+    pub fn create_new_transaction(
+        recipients: Vec<Recipient>,
+        network: Network,
+    ) -> Result<Self> {
+        let outputs = Self::recipients_to_outputs(recipients, network)?;
+        Ok(psbt::Psbt::create_new_transaction(outputs)?.into())
     }
 
     #[flutter_rust_bridge::frb(sync)]
-    pub fn create_drain_transaction(
-        wallet: SpWallet,
-        owned_outputs: Vec<OwnedOutput>,
-        wipe_address: String,
-        feerate: f32,
-        network: Network,
-    ) -> Result<Psbt> {
-        let client = wallet.get_client();
-        let available_utxos: Result<Vec<(bitcoin::OutPoint, DiscoveredOutput)>> = owned_outputs
-            .into_iter()
-            .map(|output| {
-                let outpoint = output.outpoint.into();
-                let label = match output.label {
-                    Some(l) => Some(Scalar::from_be_bytes(l)?.into()),
-                    None => None,
-                };
-                let output = DiscoveredOutput {
-                    tweak: Scalar::from_be_bytes(output.tweak)?,
-                    value: output.amount.into(),
-                    script_pubkey: ScriptBuf::from_bytes(output.script),
-                    label,
-                };
-                Ok((outpoint, output))
-            })
-            .collect();
+    pub fn add_inputs(&self, input_selection: InputSelection) -> Result<Psbt> {
+        let input_selection: spdk_wallet::client::InputSelection = input_selection.into();
+        let psbt: spdk_wallet::psbt::core::Psbt = self.into();
+        let new_psbt = psbt.add_inputs(input_selection.selected_utxos)?;
+        Ok(new_psbt.into())
+    }
 
-        let recipient_address = RecipientAddress::try_from(wipe_address)?;
-        let res = client.create_drain_transaction(
-            available_utxos?,
-            recipient_address,
-            FeeRate::from_sat_per_vb(feerate),
-            network.into(),
-        )?;
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn add_change(&self, input_selection: InputSelection, change_address: String) -> Result<Psbt> {
+        let input_selection: spdk_wallet::client::InputSelection = input_selection.into();
+        let mut psbt: spdk_wallet::psbt::core::Psbt = self.into();
 
-        Ok(res.into())
+        let new_psbt: spdk_wallet::psbt::core::Psbt;
+
+        // If we are draining, spread the change amount over the outputs with randomized amounts.
+        if input_selection.strategy == spdk_wallet::client::Strategy::Drain {
+            let change = input_selection.change;
+            if input_selection.n_change_outputs != psbt.outputs.len() {
+                return Err(Error::msg("Number of change outputs mismatch"));
+            }
+            let splits = random_split_sats(change.to_sat(), input_selection.n_change_outputs)?;
+            for (output, sat) in psbt.outputs.iter_mut().zip(splits) { // we ignore whatever amounts we wrote here before
+                output.amount = bitcoin::Amount::from_sat(sat);
+            }
+            new_psbt = psbt;
+        } else {
+            let change = input_selection.change;
+            // Changeless selections still request n_change_outputs from the UI, but
+            // must not add a zero-value output: PSBT decode rejects Amount::ZERO outputs.
+            // n_change_outputs should be set to 0 in case of changeless selection, but we play it safe
+            if change.to_sat() == 0 || input_selection.n_change_outputs == 0 {
+                new_psbt = psbt;
+            } else {
+                let splits = random_split_sats(change.to_sat(), input_selection.n_change_outputs)?;
+                let change_keys: [u8; 66] =
+                    SilentPaymentAddress::try_from(change_address.as_str())?.to_byte_array()[1..]
+                        .try_into()
+                        .unwrap();
+                let mut outputs = Vec::with_capacity(input_selection.n_change_outputs);
+                for split in splits {
+                    outputs.push(Output {
+                        amount: bitcoin::Amount::from_sat(split),
+                        sp_v0_info: Some(change_keys),
+                        sp_v0_label: Some(0),
+                        ..Default::default()
+                    });
+                }
+                new_psbt = psbt.add_outputs(outputs)?;
+            }
+        }
+
+        Ok(new_psbt.into())
     }
 
     /// Fill in data for our inputs:
@@ -391,7 +467,8 @@ impl Psbt {
 
                     let mut aux_rand = [0u8; 32];
                     rng.fill_bytes(&mut aux_rand);
-                    let dleq_proof = dleq_generate_proof(
+                    
+                    let dleq_proof = generate_dleq_proof(
                         &secp,
                         normalized_key.as_inner(),
                         scan_key,
@@ -403,7 +480,7 @@ impl Psbt {
                     })?;
                     input
                         .sp_dleq_proofs
-                        .insert(CompressedPublicKey(*scan_key), dleq_proof);
+                        .insert(CompressedPublicKey(*scan_key), to_psbt_dleq(dleq_proof));
                 }
 
                 // Then check that we don't have already filled the funding utxo
