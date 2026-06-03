@@ -3,6 +3,7 @@ import 'package:danawallet/data/models/bip353_address.dart';
 import 'package:danawallet/extensions/api_amount.dart';
 import 'package:danawallet/data/enums/selected_fee.dart';
 import 'package:danawallet/generated/rust/api/structs/amount.dart';
+import 'package:danawallet/generated/rust/api/structs/input_selection.dart';
 import 'package:danawallet/generated/rust/api/structs/recipient.dart';
 import 'package:danawallet/global_functions.dart';
 import 'package:danawallet/screens/spend/ready_to_send.dart';
@@ -11,6 +12,7 @@ import 'package:danawallet/states/fiat_exchange_rate_state.dart';
 import 'package:danawallet/states/wallet_state.dart';
 import 'package:danawallet/widgets/buttons/footer/footer_button.dart';
 import 'package:flutter/material.dart';
+import 'package:logger/web.dart';
 import 'package:provider/provider.dart';
 
 class CustomFeeScreen extends StatefulWidget {
@@ -27,6 +29,7 @@ class _CustomFeeScreenState extends State<CustomFeeScreen> {
   int _selectedFeeRate = 1; // Default to 1 sat/vB
   double _sliderValue = 1.0; // Start at 1 sat/vB
   final Map<int, Amount> _feeAmounts = {};
+  InputSelection? _inputSelection;
   bool _isLoadingFees = true;
   String? _errorMessage;
 
@@ -37,24 +40,24 @@ class _CustomFeeScreenState extends State<CustomFeeScreen> {
     _computeFeeAmounts();
   }
 
-  void _computeFeeAmounts() async {
+  void _computeFeeAmounts() {
     final walletState = Provider.of<WalletState>(context, listen: false);
 
     try {
-      // Clear any previous error
       if (mounted) {
         setState(() {
           _errorMessage = null;
         });
       }
 
-      // Compute fee for the currently selected rate
-      final feeEstimationTx = await walletState.createUnsignedTxToThisRecipient(
-          widget.recipient, _selectedFeeRate);
-
-      final fundedTx =
-          await walletState.fillUpInputsFundingUtxo(feeEstimationTx);
-      _feeAmounts[_selectedFeeRate] = fundedTx.getFeeAmount();
+      final inputSelection = walletState.selectInputsForRecipients(
+          [widget.recipient], _selectedFeeRate);
+      if (_selectedFeeRate.toDouble() != inputSelection.actualFeeRate) {
+        Logger().w(
+            'Fee rate mismatch: expected $_selectedFeeRate, actual ${inputSelection.actualFeeRate}');
+      }
+      _feeAmounts[_selectedFeeRate] = inputSelection.fee;
+      _inputSelection = inputSelection;
 
       if (mounted) {
         setState(() {
@@ -65,7 +68,7 @@ class _CustomFeeScreenState extends State<CustomFeeScreen> {
       if (mounted) {
         setState(() {
           _isLoadingFees = false;
-          // Check if it's an insufficient funds error
+          _inputSelection = null;
           if (e.toString().contains('Insufficient funds')) {
             _errorMessage =
                 'Fee too high - exceeds available funds. Try a lower fee rate.';
@@ -81,13 +84,14 @@ class _CustomFeeScreenState extends State<CustomFeeScreen> {
     final walletState = Provider.of<WalletState>(context, listen: false);
     final changeCode = walletState.changePaymentCode;
 
-    final unsignedTx = await walletState.createUnsignedTxToThisRecipient(
-        widget.recipient, _selectedFeeRate);
+    final newTx = walletState.createUnsignedTxToThisRecipient(
+        widget.recipient, _inputSelection!, _selectedFeeRate);
+    final fundedTx = await walletState.fillUpInputsFundingUtxo(newTx);
 
     // update the send amount to the actual sent amount (can be different e.g. dust)
     final updatedRecipient = Recipient(
       paymentCode: widget.recipient.paymentCode,
-      amount: unsignedTx.getSendAmount(changeCode: changeCode),
+      amount: fundedTx.getSendAmount(changeCode: changeCode),
     );
 
     if (mounted) {
@@ -95,8 +99,9 @@ class _CustomFeeScreenState extends State<CustomFeeScreen> {
           context,
           ReadyToSendScreen(
             recipient: updatedRecipient,
+            providedBip353: widget.providedBip353,
             fee: SelectedFee.custom,
-            psbt: unsignedTx,
+            psbt: fundedTx,
           ));
     }
   }
@@ -165,6 +170,7 @@ class _CustomFeeScreenState extends State<CustomFeeScreen> {
                         _sliderValue = value;
                         _selectedFeeRate = newFeeRate;
                         _isLoadingFees = true;
+                        _inputSelection = null;
                       });
                       // Recompute fees when the value changes
                       _computeFeeAmounts();
@@ -251,8 +257,10 @@ class _CustomFeeScreenState extends State<CustomFeeScreen> {
                           Text(
                             _isLoadingFees
                                 ? 'Loading...'
-                                : exchangeRate.displayFiat(
-                                    _feeAmounts[_selectedFeeRate]!),
+                                : _feeAmounts[_selectedFeeRate] != null
+                                    ? exchangeRate.displayFiat(
+                                        _feeAmounts[_selectedFeeRate]!)
+                                    : 'N/A',
                             style: BitcoinTextStyle.body5(Bitcoin.neutral7),
                           ),
                         ],
@@ -269,8 +277,11 @@ class _CustomFeeScreenState extends State<CustomFeeScreen> {
           const SizedBox(height: 10.0),
           FooterButton(
             title: 'Continue',
-            onPressed:
-                (_isLoadingFees || _errorMessage != null) ? null : onContinue,
+            onPressed: (_isLoadingFees ||
+                    _errorMessage != null ||
+                    _inputSelection == null)
+                ? null
+                : onContinue,
           ),
         ],
       ),

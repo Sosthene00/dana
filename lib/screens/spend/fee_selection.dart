@@ -4,6 +4,7 @@ import 'package:danawallet/data/models/recommended_fee_model.dart';
 import 'package:danawallet/extensions/api_amount.dart';
 import 'package:danawallet/data/enums/selected_fee.dart';
 import 'package:danawallet/generated/rust/api/structs/amount.dart';
+import 'package:danawallet/generated/rust/api/structs/input_selection.dart';
 import 'package:danawallet/generated/rust/api/structs/recipient.dart';
 import 'package:danawallet/global_functions.dart';
 import 'package:danawallet/screens/spend/ready_to_send.dart';
@@ -14,6 +15,7 @@ import 'package:danawallet/states/fiat_exchange_rate_state.dart';
 import 'package:danawallet/states/wallet_state.dart';
 import 'package:danawallet/widgets/buttons/footer/footer_button.dart';
 import 'package:flutter/material.dart';
+import 'package:logger/web.dart';
 import 'package:provider/provider.dart';
 
 class FeeSelectionScreen extends StatefulWidget {
@@ -32,6 +34,7 @@ class FeeSelectionScreenState extends State<FeeSelectionScreen> {
   RecommendedFeeResponse? _currentFeeRates;
   SelectedFee _selected = SelectedFee.normal;
   final Map<SelectedFee, Amount> _feeAmounts = {};
+  final Map<SelectedFee, InputSelection> _inputSelections = {};
 
   @override
   void initState() {
@@ -40,8 +43,8 @@ class FeeSelectionScreenState extends State<FeeSelectionScreen> {
   }
 
   Future<void> _computeFeeAmounts() async {
-    final walletState = Provider.of<WalletState>(context, listen: false);
     final chainState = Provider.of<ChainState>(context, listen: false);
+    final walletState = Provider.of<WalletState>(context, listen: false);
 
     // fetch fee rates from mempool
     final currentFeeRates = await chainState.getCurrentFeeRates();
@@ -52,12 +55,13 @@ class FeeSelectionScreenState extends State<FeeSelectionScreen> {
       SelectedFee.slow
     ]) {
       final feerate = fee.getFeeRate(currentFeeRates);
-      final feeEstimationTx = await walletState.createUnsignedTxToThisRecipient(
-          widget.recipient, feerate);
-      // We need to add the funding utxo to be able to compute fees
-      final fundedTx =
-          await walletState.fillUpInputsFundingUtxo(feeEstimationTx);
-      _feeAmounts[fee] = fundedTx.getFeeAmount();
+      final inputSelection = walletState.selectInputsForRecipients(
+          [widget.recipient], feerate);
+      if (feerate.toDouble() != inputSelection.actualFeeRate) {
+        Logger().w('Fee rate mismatch: expected $feerate, actual ${inputSelection.actualFeeRate}');
+      }
+      _feeAmounts[fee] = inputSelection.fee;
+      _inputSelections[fee] = inputSelection;
     }
 
     setState(() {
@@ -71,8 +75,8 @@ class FeeSelectionScreenState extends State<FeeSelectionScreen> {
 
     final feerate = _selected.getFeeRate(_currentFeeRates!);
 
-    final newTx = await walletState.createUnsignedTxToThisRecipient(
-        widget.recipient, feerate);
+    final newTx = walletState.createUnsignedTxToThisRecipient(
+        widget.recipient, _inputSelections[_selected]!, feerate);
     final fundedTx = await walletState.fillUpInputsFundingUtxo(newTx);
 
     // update the send amount to the actual sent amount (can be different e.g. dust)

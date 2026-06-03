@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'package:danawallet/constants.dart';
 import 'package:danawallet/data/models/bip353_address.dart';
+import 'package:danawallet/extensions/api_amount.dart';
 import 'package:danawallet/extensions/date_time.dart';
 import 'package:danawallet/extensions/network.dart';
 import 'package:danawallet/generated/rust/api/structs/amount.dart';
+import 'package:danawallet/generated/rust/api/structs/input_selection.dart';
 import 'package:danawallet/generated/rust/api/structs/outpoint.dart';
 import 'package:danawallet/generated/rust/api/structs/owned_output.dart';
 import 'package:danawallet/generated/rust/api/structs/psbt.dart';
@@ -12,6 +14,7 @@ import 'package:danawallet/data/models/recorded_transaction.dart';
 import 'package:danawallet/generated/rust/api/structs/network.dart';
 import 'package:danawallet/generated/rust/api/wallet.dart';
 import 'package:danawallet/generated/rust/api/wallet/setup.dart';
+import 'package:danawallet/generated/rust/api/wallet/coin_selection.dart';
 import 'package:danawallet/repositories/mempool_api_repository.dart';
 import 'package:danawallet/repositories/owned_outputs_repository.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
@@ -246,27 +249,40 @@ class WalletState extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<Psbt> createUnsignedTxToThisRecipient(
-      Recipient recipient, int feerate) async {
-    final wallet = await getWalletFromSecureStorage();
-
-    if (recipient.amount.field0 < amount.field0 - BigInt.from(546)) {
-      return Psbt.createNewTransaction(
-          wallet: wallet,
-          ownedOutputs: unspentOutputs,
-          apiRecipients: [
-            recipient,
-          ],
-          feerate: feerate.toDouble(),
-          network: network);
+  InputSelection selectInputsForRecipients(
+      List<Recipient> recipients, int feerate) {
+    final totalSentAmount =
+        recipients.map((r) => r.amount).reduce((a, b) => a + b);
+    if (totalSentAmount.field0 <= amount.field0 - BigInt.from(546)) {
+      return selectUtxosToSpend(
+        ownedOutputs: unspentOutputs,
+        recipients: recipients,
+        nChangeOutputs: BigInt.from(1),
+        feerate: feerate.toDouble(),
+        network: network,
+        drain: false,
+      );
     } else {
-      return Psbt.createDrainTransaction(
-          wallet: wallet,
-          ownedOutputs: unspentOutputs,
-          wipeAddress: recipient.paymentCode,
-          feerate: feerate.toDouble(),
-          network: network);
+      return selectUtxosToSpend(
+        ownedOutputs: unspentOutputs,
+        recipients: recipients,
+        nChangeOutputs: BigInt.from(1),
+        feerate: feerate.toDouble(),
+        network: network,
+        drain: true,
+      );
     }
+  }
+
+  Psbt createUnsignedTxToThisRecipient(
+      Recipient recipient, InputSelection inputSelection, int feerate) {
+    Psbt psbt = Psbt.createNewTransaction(
+        recipients: [recipient],
+        network: network,
+      );
+    final inputAddedPsbt = psbt.addInputs(inputSelection: inputSelection);
+    final changeAddedPsbt = inputAddedPsbt.addChange(inputSelection: inputSelection, changeAddress: changePaymentCode);
+    return changeAddedPsbt;
   }
 
   Future<Psbt> fillUpInputsFundingUtxo(Psbt psbt) async {
