@@ -15,7 +15,7 @@ pub fn select_utxos_to_spend(
     feerate: f32,
     network: Network,
     drain: bool,
-) -> Result<InputSelection> {
+) -> Result<Vec<InputSelection>> {
     let fee_rate = FeeRate::from_sat_per_vb(feerate);
 
     let recipients: Vec<spdk_wallet::client::Recipient> = recipients
@@ -99,10 +99,11 @@ pub fn select_utxos_to_spend(
     .collect::<Result<Vec<_>>>()?;
 
     let input_selection = if drain {
-        select_all_utxos_for_fee_rate(available_utxos, tx_outs, fee_rate)?
+        let selection = select_all_utxos_for_fee_rate(available_utxos, tx_outs, fee_rate)?;
+        vec![selection]
     } else {
         pick_utxos_for_fee_rate(available_utxos, tx_outs, n_change_outputs, fee_rate)?
     };
 
-    Ok(input_selection.into())
+    Ok(input_selection.into_iter().map(Into::into).collect())
 }
