@@ -18,6 +18,7 @@ import 'package:provider/provider.dart';
 class ReadyToSendScreen extends StatefulWidget {
   final Recipient recipient;
   final Bip353Address? providedBip353;
+  final Recipient? sponsorRecipient;
   final SelectedFee fee;
   final Psbt psbt;
   const ReadyToSendScreen(
@@ -25,7 +26,8 @@ class ReadyToSendScreen extends StatefulWidget {
       required this.psbt,
       required this.fee,
       required this.recipient,
-      this.providedBip353});
+      this.providedBip353,
+      this.sponsorRecipient});
 
   @override
   ReadyToSendScreenState createState() => ReadyToSendScreenState();
@@ -92,6 +94,16 @@ class ReadyToSendScreenState extends State<ReadyToSendScreen> {
 
     String displayEstimatedFee = widget.psbt.getFeeAmount().displayBtc();
 
+    String? displaySponsor;
+    String? displayDonationAmount;
+    if (widget.sponsorRecipient != null) {
+      final sponsor = widget.sponsorRecipient!;
+      final sponsorContact =
+          contacts.getContactByPaymentCode(sponsor.paymentCode);
+      displaySponsor = sponsorContact?.displayName ?? sponsor.paymentCode;
+      displayDonationAmount = sponsor.amount.displayBtc();
+    }
+
     return ScreenSkeleton(
         showBackButton: true,
         title: 'Ready to send?',
@@ -105,6 +117,12 @@ class ReadyToSendScreenState extends State<ReadyToSendScreen> {
             const Divider(),
             entryRow('Amount', displayAmount, false),
             const Divider(),
+            if (displaySponsor != null && displayDonationAmount != null) ...[
+              entryRow('Donate to', displaySponsor, true),
+              const Divider(),
+              entryRow('Donation', displayDonationAmount, false),
+              const Divider(),
+            ],
             entryRow('Arrival time', displayArrivalTime, false),
             const Divider(),
             entryRow('Fee', displayEstimatedFee, false),

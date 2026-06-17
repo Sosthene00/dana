@@ -3,6 +3,7 @@ import 'package:danawallet/constants.dart';
 import 'package:danawallet/data/models/bip353_address.dart';
 import 'package:danawallet/extensions/api_amount.dart';
 import 'package:danawallet/extensions/date_time.dart';
+import 'package:danawallet/extensions/input_selection.dart';
 import 'package:danawallet/extensions/network.dart';
 import 'package:danawallet/generated/rust/api/structs/amount.dart';
 import 'package:danawallet/generated/rust/api/structs/input_selection.dart';
@@ -261,9 +262,9 @@ class WalletState extends ChangeNotifier {
         feerate: feerate.toDouble(),
         network: network,
         drain: false,
-      );
+      ).pickStandard();
     } else {
-      return selectUtxosToSpend(
+      final selections = selectUtxosToSpend(
         ownedOutputs: unspentOutputs,
         recipients: recipients,
         nChangeOutputs: BigInt.from(1),
@@ -271,6 +272,7 @@ class WalletState extends ChangeNotifier {
         network: network,
         drain: true,
       );
+      return selections.first;
     }
   }
 
