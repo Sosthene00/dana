@@ -310,6 +310,9 @@ impl Psbt {
         // If we are draining, spread the change amount over the outputs with randomized amounts.
         if input_selection.strategy == spdk_wallet::client::Strategy::Drain {
             let change = input_selection.change;
+            if change.to_sat() == 0 {
+                return Err(Error::msg("Cannot drain with zero change (inputs consumed by fees)"));
+            }
             if input_selection.n_change_outputs != psbt.outputs.len() {
                 return Err(Error::msg("Number of change outputs mismatch"));
             }

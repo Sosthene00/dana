@@ -18,11 +18,11 @@ pub fn random_split_sats(total_sat: u64, n: usize) -> Result<Vec<u64>> {
     if n == 0 {
         return Err(Error::msg("Cannot split change across zero outputs"));
     }
+    if total_sat == 0 {
+        return Err(Error::msg("Cannot split zero change"));
+    }
     if n == 1 {
         return Ok(vec![total_sat]);
-    }
-    if total_sat == 0 {
-        return Ok(vec![0; n]);
     }
 
     let min_total = MIN_DRAIN_OUTPUT_SAT
