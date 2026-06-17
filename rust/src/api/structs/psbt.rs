@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Error, Result};
 use flutter_rust_bridge::frb;
@@ -6,18 +6,23 @@ use rand::{RngCore, rng};
 use spdk_wallet::{DATA_CARRIER_SIZE, silentpayments};
 use spdk_wallet::bitcoin::bip32::{DerivationPath, Fingerprint};
 use spdk_wallet::bitcoin::consensus::encode::serialize_hex;
-use spdk_wallet::bitcoin::key::{Keypair, Secp256k1};
+use spdk_wallet::bitcoin::key::{Keypair, Parity, Secp256k1};
 use spdk_wallet::bitcoin::params::Params;
 use spdk_wallet::bitcoin::script::PushBytesBuf;
-use spdk_wallet::bitcoin::{Address, CompressedPublicKey, ScriptBuf, TxOut};
+use spdk_wallet::bitcoin::{Address, CompressedPublicKey, ScriptBuf, TxOut, XOnlyPublicKey};
 use spdk_wallet::bitcoin::secp256k1::{PublicKey, Scalar};
 use spdk_wallet::client::RecipientAddress;
+use spdk_wallet::psbt::core::utils::{to_psbt_dleq, to_rust_dleq};
 use spdk_wallet::psbt::core::Output;
-use spdk_wallet::psbt::core::utils::to_psbt_dleq;
-use spdk_wallet::psbt::{self, generate_dleq_proof};
+use spdk_wallet::psbt::{self};
+use spdk_wallet::psbt::roles::signer::extract_eligible_input_pubkey;
 use spdk_wallet::psbt::roles::{ConstructorPsbtExt, ExtractorPsbtExt, InputWitnessFinalizerPsbtExt, SignerPsbtExt};
-use spdk_wallet::silentpayments::utils::common::{Raw, SILENT_PAYMENT_ADDRESS_BYTE_LEN};
-use spdk_wallet::silentpayments::utils::sending::TypedSecretKey;
+use spdk_wallet::silentpayments::sending::generate_recipient_pubkeys;
+use spdk_wallet::silentpayments::utils::sending::{NormalizedSecretKey, PartialSenderEcdhShare};
+use spdk_wallet::silentpayments::utils::OutPoint as SpOutPoint;
+use spdk_wallet::silentpayments::{
+    NonEmptyArray, TransactionInputs, TransactionSharedSecret, SILENT_PAYMENT_ADDRESS_BYTE_LEN,
+};
 use spdk_wallet::{
     bitcoin::{self},
     silentpayments::SilentPaymentAddress,
@@ -31,6 +36,41 @@ use crate::api::structs::{
     amount::Amount, input_selection::InputSelection, outpoint::OutPoint,
 };
 use crate::api::wallet::SpWallet;
+
+/// For SP P2TR inputs, BIP-352 ECDH uses the tweaked output key from the funding script.
+/// `sp_spend_bip32_derivations` still carries the untweaked spend key for signing.
+fn extract_ecdh_input_pubkey(
+    input: &spdk_wallet::psbt::core::Input,
+) -> Result<Option<PublicKey>> {
+    let funding_utxo = input
+        .funding_utxo()
+        .map_err(|_| Error::msg("Input missing funding utxo"))?;
+
+    if funding_utxo.script_pubkey.is_p2tr() && input.sp_tweak.is_some() {
+        let taproot_output_key =
+            XOnlyPublicKey::from_slice(&funding_utxo.script_pubkey.as_bytes()[2..])?;
+        Ok(Some(PublicKey::from_x_only_public_key(
+            taproot_output_key,
+            Parity::Even,
+        )))
+    } else {
+        extract_eligible_input_pubkey(input).map_err(|e| Error::msg(e.to_string()))
+    }
+}
+
+fn collect_output_scan_keys(psbt: &spdk_wallet::psbt::core::Psbt) -> Result<Vec<CompressedPublicKey>> {
+    psbt.outputs
+        .iter()
+        .filter_map(|o| o.sp_v0_info.as_ref())
+        .map(|sp_info| {
+            if sp_info.len() != 66 {
+                return Err(Error::msg("Invalid SP info length"));
+            }
+            CompressedPublicKey::from_slice(&sp_info.as_slice()[..33])
+                .map_err(|e| Error::msg(format!("Invalid scan public key in output: {}", e)))
+        })
+        .collect()
+}
 
 pub struct Psbt(pub Vec<u8>);
 
@@ -354,7 +394,7 @@ impl Psbt {
     /// - Funding utxo
     /// - bip32 derivation
     /// - tweak
-    /// - ecdh shares
+    /// - per-input ECDH shares and DLEQ proofs
     #[flutter_rust_bridge::frb(sync)]
     pub fn fill_up_inputs(&self, wallet: SpWallet, owned_outputs: Vec<OwnedOutput>) -> Result<Psbt> {
         let selected_utxos: HashSet<crate::api::structs::outpoint::OutPoint> = self
@@ -369,20 +409,10 @@ impl Psbt {
             .collect();
 
         let mut psbt: spdk_wallet::psbt::core::Psbt = self.into();
-        let outputs_scan_keys: Vec<PublicKey> = psbt
-            .outputs
-            .iter()
-            .filter_map(|o| o.sp_v0_info.as_ref())
-            .map(|sp_info| {
-                if sp_info.len() != 66 {
-                    return Err(anyhow::Error::msg("Invalid SP info length"));
-                };
-                let scan_key_bytes = sp_info.as_slice().get(..33).unwrap();
-                PublicKey::from_slice(scan_key_bytes).map_err(|e| {
-                    anyhow::Error::msg(format!("Invalid scan public key in output: {}", e))
-                })
-            })
-            .collect::<Result<Vec<PublicKey>>>()?;
+        let outputs_scan_keys: Vec<PublicKey> = collect_output_scan_keys(&psbt)?
+            .into_iter()
+            .map(|k| k.0)
+            .collect();
         let secp = Secp256k1::new();
         let mut rng = rng();
         let client = wallet.get_client();
@@ -402,109 +432,105 @@ impl Psbt {
             DerivationPath::master()
         };
         for output in selected_outputs {
-            // Find the input that spend this output
-            let input = psbt.inputs.iter_mut().find(|i| {
-                i.previous_txid.to_string() == output.outpoint.txid
-                    && i.spent_output_index == output.outpoint.vout
-            });
-            if let Some(input) = input {
-                // Compute the tweaked key and check that it matched the spend key
-                let tweaked_key = sp_spend_key
-                    .secret_key()
-                    .add_tweak(&Scalar::from_be_bytes(output.tweak)?)?;
+            let input_index = psbt
+                .inputs
+                .iter()
+                .position(|i| {
+                    i.previous_txid.to_string() == output.outpoint.txid
+                        && i.spent_output_index == output.outpoint.vout
+                })
+                .ok_or_else(|| {
+                    Error::msg(format!(
+                        "Input not found for output {}:{}",
+                        output.outpoint.txid, output.outpoint.vout
+                    ))
+                })?;
+            let input = &mut psbt.inputs[input_index];
+            // Compute the tweaked key and check that it matched the spend key
+            let tweaked_key = sp_spend_key
+                .secret_key()
+                .add_tweak(&Scalar::from_be_bytes(output.tweak)?)?;
 
-                if tweaked_key.x_only_public_key(&secp).0.serialize() != output.script[2..] {
+            let normalized_key = NormalizedSecretKey::new(&secp, tweaked_key, true);
+
+            if normalized_key.as_inner().x_only_public_key(&secp).0.serialize() != output.script[2..] {
+                return Err(anyhow::Error::msg(format!(
+                    "Tweaked key mismatch for input {}:{}",
+                    input.previous_txid, input.spent_output_index
+                )));
+            }
+
+            if input.sp_tweak.is_none() {
+                input.sp_tweak = Some(output.tweak);
+            } else {
+                if input.sp_tweak.unwrap() != output.tweak {
                     return Err(anyhow::Error::msg(format!(
                         "Tweaked key mismatch for input {}:{}",
                         input.previous_txid, input.spent_output_index
                     )));
                 }
+            }
 
-                if input.sp_tweak.is_none() {
-                    input.sp_tweak = Some(output.tweak);
-                } else {
-                    if input.sp_tweak.unwrap() != output.tweak {
-                        return Err(anyhow::Error::msg(format!(
-                            "Tweaked key mismatch for input {}:{}",
-                            input.previous_txid, input.spent_output_index
-                        )));
-                    }
-                }
-
-                if !input
+            if !input
+                .sp_spend_bip32_derivations
+                .contains_key(&compressed_sp_spend_key)
+            {
+                input.sp_spend_bip32_derivations.insert(
+                    compressed_sp_spend_key,
+                    (fingerprint, derivation_path.clone()),
+                );
+            } else {
+                if let Some((f, dp)) = input
                     .sp_spend_bip32_derivations
-                    .contains_key(&compressed_sp_spend_key)
+                    .get(&compressed_sp_spend_key)
                 {
-                    input.sp_spend_bip32_derivations.insert(
-                        compressed_sp_spend_key,
-                        (fingerprint, derivation_path.clone()),
-                    );
-                } else {
-                    if let Some((f, dp)) = input
-                        .sp_spend_bip32_derivations
-                        .get(&compressed_sp_spend_key)
-                    {
-                        if *f != fingerprint || *dp != derivation_path {
-                            return Err(anyhow::Error::msg(format!(
-                                "Bip32 derivation mismatch for input {}:{}",
-                                input.previous_txid, input.spent_output_index
-                            )));
-                        }
-                    }
-                }
-
-                let txout = TxOut {
-                    value: output.amount.into(),
-                    script_pubkey: ScriptBuf::from_bytes(output.script),
-                };
-
-                // compute the ecdh share and DLEQ proof for each sp address in outputs
-                for scan_key in &outputs_scan_keys {
-                    let normalized_key = TypedSecretKey::<Raw>::new(tweaked_key)
-                        .normalize_for_input(&secp, txout.script_pubkey.is_p2tr());
-                    let shared_secret = normalized_key.calculate_ecdh_shared_secret(&scan_key);
-                    input.sp_ecdh_shares.insert(
-                        CompressedPublicKey(*scan_key),
-                        CompressedPublicKey(shared_secret.into_inner()),
-                    );
-
-                    let mut aux_rand = [0u8; 32];
-                    rng.fill_bytes(&mut aux_rand);
-                    
-                    let dleq_proof = generate_dleq_proof(
-                        &secp,
-                        normalized_key.as_inner(),
-                        scan_key,
-                        &aux_rand,
-                        None,
-                    )
-                    .map_err(|e| {
-                        anyhow::Error::msg(format!("DLEQ proof generation failed: {}", e))
-                    })?;
-                    input
-                        .sp_dleq_proofs
-                        .insert(CompressedPublicKey(*scan_key), to_psbt_dleq(dleq_proof));
-                }
-
-                // Then check that we don't have already filled the funding utxo
-                if let Ok(funding_utxo) = input.funding_utxo() {
-                    if *funding_utxo == txout {
-                        continue;
-                    } else {
+                    if *f != fingerprint || *dp != derivation_path {
                         return Err(anyhow::Error::msg(format!(
-                            "Funding utxo mismatch for input {}:{}",
+                            "Bip32 derivation mismatch for input {}:{}",
                             input.previous_txid, input.spent_output_index
                         )));
                     }
+                }
+            }
+
+            let txout = TxOut {
+                value: output.amount.into(),
+                script_pubkey: ScriptBuf::from_bytes(output.script),
+            };
+
+            for scan_key in &outputs_scan_keys {
+                let mut aux_rand = [0u8; 32];
+                rng.fill_bytes(&mut aux_rand);
+                let partial_share = PartialSenderEcdhShare::new(
+                    &secp,
+                    *scan_key,
+                    input_index,
+                    normalized_key.clone(),
+                    &aux_rand,
+                )
+                .map_err(|e| Error::msg(format!("ECDH share generation failed: {}", e)))?;
+                input.sp_ecdh_shares.insert(
+                    CompressedPublicKey(*scan_key),
+                    CompressedPublicKey(*partial_share.as_ecdh_shared_secret()),
+                );
+                input.sp_dleq_proofs.insert(
+                    CompressedPublicKey(*scan_key),
+                    to_psbt_dleq(*partial_share.dleq_proof()),
+                );
+            }
+
+            // Then check that we don't have already filled the funding utxo
+            if let Ok(funding_utxo) = input.funding_utxo() {
+                if *funding_utxo == txout {
+                    continue;
                 } else {
-                    input.witness_utxo = Some(txout);
+                    return Err(anyhow::Error::msg(format!(
+                        "Funding utxo mismatch for input {}:{}",
+                        input.previous_txid, input.spent_output_index
+                    )));
                 }
             } else {
-                // Very unlikely
-                return Err(anyhow::Error::msg(format!(
-                    "Input not found for output {}:{}",
-                    output.outpoint.txid, output.outpoint.vout
-                )));
+                input.witness_utxo = Some(txout);
             }
         }
 
@@ -512,20 +538,89 @@ impl Psbt {
     }
 
     #[flutter_rust_bridge::frb(sync)]
-    pub fn aggregate_ecdh_shares(&self) -> Result<Psbt> {
-        let mut psbt: spdk_wallet::psbt::core::Psbt = self.into();
-        let secp = Secp256k1::new();
-        psbt.aggregate_ecdh_shares(&secp)?;
-        Ok((psbt.into()))
-    }
-
-    #[flutter_rust_bridge::frb(sync)]
     pub fn fill_up_outputs_key(&self) -> Result<Psbt> {
         let mut psbt: spdk_wallet::psbt::core::Psbt = self.into();
         let secp = Secp256k1::new();
-        let outputs = psbt.compute_sp_outputs(&secp)?;
-        psbt.set_sp_scriptpubkey(outputs)?;
-        Ok((psbt.into()))
+        let scan_keys = collect_output_scan_keys(&psbt)?;
+        if scan_keys.is_empty() {
+            return Ok(psbt.into());
+        }
+
+        let mut sp_addresses_bytes: Vec<Option<[u8; SILENT_PAYMENT_ADDRESS_BYTE_LEN]>> =
+            Vec::with_capacity(psbt.global.output_count);
+        for output in psbt.outputs.iter() {
+            let Some(sp_info) = output.sp_v0_info.as_ref() else {
+                sp_addresses_bytes.push(None);
+                continue;
+            };
+            if sp_info.len() != 66 {
+                return Err(Error::msg("Invalid SP info length"));
+            }
+            let mut sp_address_bytes = [0u8; SILENT_PAYMENT_ADDRESS_BYTE_LEN];
+            sp_address_bytes[1..].copy_from_slice(sp_info.as_slice());
+            sp_addresses_bytes.push(Some(sp_address_bytes));
+        }
+
+        let mut transaction_inputs = TransactionInputs::with_capacity(psbt.global.input_count);
+        for input in psbt.inputs.iter() {
+            let outpoint = SpOutPoint::from_txid_and_vout(
+                input.previous_txid.to_string(),
+                input.spent_output_index,
+            )
+            .map_err(|e| Error::msg(e.to_string()))?;
+            let spk = &input
+                .funding_utxo()
+                .map_err(|e| Error::msg(e.to_string()))?
+                .script_pubkey;
+            let pubkey = extract_ecdh_input_pubkey(input)?;
+            transaction_inputs.push(outpoint, spk.to_bytes(), pubkey);
+        }
+        let eligible_vins = transaction_inputs.eligible_vins();
+
+        let mut scan_key_to_shared_secret: HashMap<PublicKey, TransactionSharedSecret> =
+            HashMap::with_capacity(scan_keys.len());
+        for scan_key in &scan_keys {
+            let mut partial_shares = Vec::with_capacity(psbt.global.input_count);
+            for (vin, input) in psbt.inputs.iter().enumerate() {
+                if !eligible_vins.contains(&vin) {
+                    continue;
+                }
+                let shared_secret = input.sp_ecdh_shares.get(scan_key).ok_or_else(|| {
+                    Error::msg(format!(
+                        "No shared secret found for input {vin} and scan key {scan_key}"
+                    ))
+                })?;
+                let dleq_proof = input.sp_dleq_proofs.get(scan_key).ok_or_else(|| {
+                    Error::msg(format!(
+                        "No dleq proof found for input {vin} and scan key {scan_key}"
+                    ))
+                })?;
+                let partial_share = PartialSenderEcdhShare::new_unchecked(
+                    scan_key.0,
+                    vin,
+                    shared_secret.0,
+                    to_rust_dleq(*dleq_proof),
+                );
+                partial_shares.push(partial_share);
+            }
+            let shared_secret = TransactionSharedSecret::new_from_partial_shares(
+                &secp,
+                scan_key.0,
+                NonEmptyArray::new(&partial_shares).map_err(|e| Error::msg(e.to_string()))?,
+                &transaction_inputs,
+            )
+            .map_err(|e| Error::msg(e.to_string()))?;
+            scan_key_to_shared_secret.insert(scan_key.0, shared_secret);
+        }
+
+        let recipients: Vec<[u8; SILENT_PAYMENT_ADDRESS_BYTE_LEN]> = sp_addresses_bytes
+            .into_iter()
+            .filter_map(|x| x)
+            .collect();
+        let xonly_map = generate_recipient_pubkeys(&secp, &recipients, &scan_key_to_shared_secret)
+            .map_err(|e| Error::msg(e.to_string()))?;
+        psbt.set_sp_scriptpubkey(xonly_map)?;
+        Ok(psbt.into())
     }
 
     #[flutter_rust_bridge::frb(sync)]
