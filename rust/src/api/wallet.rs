@@ -1,3 +1,4 @@
+pub mod challenge;
 mod info;
 pub mod setup;
 mod sync;
