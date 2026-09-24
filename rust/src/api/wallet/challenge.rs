@@ -216,3 +216,64 @@ mod tests {
         assert_eq!(via_wallet.len(), 128); // 64-byte schnorr sig, lowercase hex
     }
 }
+
+// ---------------------------------------------------------------------------
+// E2E signing/derivation oracle for `test/integration/nameserver_e2e.py`.
+//
+// An `#[ignore]`d test on purpose: the harness drives it with
+// `cargo test --workspace -- nameserver_e2e_oracle --ignored --nocapture`
+// plus env params, so the real wallet-side `sign_challenge` (T1) is the
+// only signer in the loop and no extra dev-dependency or bin target is
+// needed. See the harness header + commit message for the run recipe.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod e2e_oracle {
+    use super::*;
+    use spdk_wallet::silentpayments::{Network as SpNetwork, SpVersion, SilentPaymentCode};
+    use std::str::FromStr;
+
+    fn env(key: &str) -> String {
+        std::env::var(key).unwrap_or_else(|_| panic!("{key} must be set by the e2e harness"))
+    }
+
+    #[test]
+    #[ignore = "invoked by test/integration/nameserver_e2e.py; run: cargo test --workspace -- nameserver_e2e_oracle --ignored --nocapture"]
+    fn nameserver_e2e_oracle() {
+        let scan_hex = env("DANA_ORACLE_SCAN");
+        let spend_hex = env("DANA_ORACLE_SPEND");
+        let scan = SecretKey::from_str(&scan_hex).expect("scan secret: 64-hex");
+        let spend = SecretKey::from_str(&spend_hex).expect("spend secret: 64-hex");
+
+        // Testnet SP address whose spend key is `spend` — the exact string
+        // the harness submits to /challenge and /register.
+        let secp = secp256k1::Secp256k1::new();
+        let sp = SilentPaymentCode::new(
+            SpVersion::ZERO,
+            scan.public_key(&secp),
+            spend.public_key(&secp),
+            SpNetwork::Testnet,
+        );
+        println!("SPADDR={sp}");
+
+        // The wallet-side attestation: T1 sign_challenge over the server's
+        // exact /challenge `message` (SHA-256 pre-hash path inside).
+        let message = env("DANA_ORACLE_MSG");
+        let sig = sign_challenge(&spend_hex, &message).expect("sign_challenge rejected the message");
+        println!("SIG={sig}");
+
+        // Negative-path signer: a structurally valid BIP-340 signature over
+        // the RAW PREIMAGE (first 32 message bytes used directly as the
+        // digest — no SHA-256). The nameserver must reject this with 401:
+        // only the sha256-prehashed contract verifies. Same key, so this is
+        // a wrong-message signature, not a malformed one.
+        if std::env::var("DANA_ORACLE_RAW").is_ok() {
+            let mut raw_digest = [0u8; 32];
+            raw_digest.copy_from_slice(&message.as_bytes()[..32]);
+            let m = Message::from_digest(raw_digest);
+            let keypair = Keypair::from_secret_key(&secp, &spend);
+            let aux = sha256::Hash::hash(&spend.secret_bytes()).to_byte_array();
+            let raw_sig = secp.sign_schnorr_with_aux_rand(&m, &keypair, &aux);
+            println!("RAWSIG={}", to_hex(&raw_sig.serialize()));
+        }
+    }
+}
