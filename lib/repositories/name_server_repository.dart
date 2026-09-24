@@ -51,6 +51,11 @@ class RegisterRejectedException implements Exception {
 class NameServerRepository {
   String baseUrl;
 
+  /// Injectable HTTP client seam: defaults to a fresh
+  /// `http.Client()` per request (identical production behavior); tests
+  /// assign a MockClient to intercept the challenge/registration wire.
+  http.Client Function() client = http.Client.new;
+
   NameServerRepository({required Network network})
       : baseUrl = (() {
           // live flavors only allow mainnet, so we don't need to separate based on the network
@@ -71,7 +76,7 @@ class NameServerRepository {
   Future<NameServerInfoResponse> getInfo() async {
     Logger().d("Getting name server info");
 
-    final response = await http.Client().get(
+    final response = await client().get(
       Uri.parse('$baseUrl/info'),
     );
 
@@ -111,7 +116,7 @@ class NameServerRepository {
 
     Logger().d(
         'Registering dana address: $danaAddress with request ID: $requestId');
-    final response = await http.Client().post(
+    final response = await client().post(
       Uri.parse('$baseUrl/register'),
       headers: {
         'Content-Type': 'application/json',
@@ -185,7 +190,7 @@ class NameServerRepository {
 
     Logger().d(
         'Requesting challenge for: $userName@$domain with request ID: $requestId');
-    final response = await http.Client().post(
+    final response = await client().post(
       Uri.parse('$baseUrl/challenge'),
       headers: {
         'Content-Type': 'application/json',
@@ -218,7 +223,7 @@ class NameServerRepository {
     }
     Logger().d(
         'Looking up dana addresses for SP address: ${spAddress.substring(0, 20)}... (request ID: $requestId)');
-    final response = await http.Client().get(
+    final response = await client().get(
       Uri.parse('$baseUrl/lookup').replace(queryParameters: {
         'sp_address': spAddress,
         'id': requestId,
@@ -255,7 +260,7 @@ class NameServerRepository {
       String prefix, String requestId) async {
     Logger().d(
         'Searching for dana addresses with prefix: $prefix (request ID: $requestId)');
-    final response = await http.Client().get(
+    final response = await client().get(
       Uri.parse('$baseUrl/search').replace(queryParameters: {
         'prefix': prefix,
         'id': requestId,

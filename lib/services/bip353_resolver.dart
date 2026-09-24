@@ -27,7 +27,15 @@ class Bip353Resolver {
   /// Returns [String] if the address exists and is valid
   /// Returns null if the DNS record doesn't exist (address not registered)
   /// Throws an exception for network errors, invalid responses, or malformed data
+  /// Test-only override seam: when non-null, [resolve] delegates here
+  /// instead of issuing the DNS query. Production never sets it.
+  static Future<String?> Function(Bip353Address, Network)? resolveOverride;
+
   static Future<String?> resolve(Bip353Address address, Network network) async {
+    final override = resolveOverride;
+    if (override != null) {
+      return override(address, network);
+    }
     if (network == Network.regtest) {
       throw Exception("regtest not allowed");
     }
