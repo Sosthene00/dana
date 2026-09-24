@@ -4,6 +4,7 @@ import 'package:bitcoin_ui/bitcoin_ui.dart';
 import 'package:danawallet/constants.dart';
 import 'package:danawallet/data/models/bip353_address.dart';
 import 'package:danawallet/global_functions.dart';
+import 'package:danawallet/repositories/name_server_repository.dart';
 import 'package:danawallet/repositories/wallet_repository.dart';
 import 'package:danawallet/screens/home/home.dart';
 import 'package:danawallet/screens/onboarding/onboarding_skeleton.dart';
@@ -345,11 +346,47 @@ class _RegisterDanaAddressScreenState extends State<RegisterDanaAddressScreen> {
         throw Exception('Registration succeeded but dana address is null');
       }
     } catch (e) {
-      displayError('Failed to register username', e);
+      _showRegistrationError(e);
       setState(() {
         _isRegistering = false;
       });
     }
+  }
+
+  /// Maps exceptions escaping [WalletState.registerDanaAddress] to plain
+  /// user copy, surfaced with the snackbar style this screen already uses.
+  ///
+  /// The challenge 429 backoff and the single automatic expired/invalid
+  /// nonce re-challenge live in DanaAddressService's retry matrix, so only
+  /// their final give-up reaches here: the UI shows copy for exhausted
+  /// retries only. Anything unrecognised keeps the generic displayError
+  /// path.
+  void _showRegistrationError(Object e) {
+    final stringified = e.toString();
+    String? copy;
+    if (e is FormatException) {
+      copy = 'Invalid Dana address';
+    } else if (e is RegisterRejectedException &&
+        e.message.toLowerCase().contains('nonce')) {
+      // The service already spent its one automatic nonce refresh before
+      // rethrowing; this is the give-up copy.
+      copy = 'Registration timed out, retrying...';
+    } else if ((e is ChallengeRejectedException && e.status == 429) ||
+        stringified.contains('HTTP 429')) {
+      // Backoff schedule exhausted (the service rethrows a plain Exception
+      // whose text carries HTTP 429) or a 429 escaped elsewhere.
+      copy = 'Too many pending registrations, try again in a few minutes';
+    }
+    if (copy != null) {
+      Logger().e('Registration failed: $stringified');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(copy)),
+        );
+      }
+      return;
+    }
+    displayError('Failed to register username', e);
   }
 
   void _onSkip() {
