@@ -2,12 +2,44 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:crypto/crypto.dart';
 import 'package:danawallet/data/models/bip353_address.dart';
+import 'package:danawallet/data/models/name_server_challenge_response.dart';
 import 'package:danawallet/data/models/prefix_search_response.dart';
 import 'package:danawallet/generated/rust/api/bip39.dart';
 import 'package:danawallet/generated/rust/api/structs/network.dart';
 import 'package:danawallet/repositories/name_server_repository.dart';
 import 'package:danawallet/services/bip353_resolver.dart';
 import 'package:logger/logger.dart';
+
+// --- Challenge-auth registration retry matrix (T4b) ------------------------
+// Server-side counterpart: dana-nameserver challenge-auth. Verify-before-burn
+// (nameserver 72a3917) keeps the nonce valid when only signature verification
+// fails, so the same challenge can be re-signed once; any nonce-class
+// rejection requires a full re-challenge.
+const int _maxReSignRetries = 1;
+const int _maxNonceRefreshes = 1;
+const List<int> _challenge429BackoffSeconds = [2, 5, 15];
+// Server nonce TTL is 300 s; the confirm screen can sit open past it, so
+// refresh proactively inside this margin (epoch-seconds comparison).
+const int _challengeExpirySafetyMarginSeconds = 10;
+
+/// Server messages that indicate the challenge *signature* failed
+/// verification (dana-nameserver challenge-auth src/main.rs verification
+/// branch). These do not burn the nonce.
+const List<String> _signatureVerificationPhrases = [
+  'Signature verification failed',
+  'Invalid signature hex',
+  'Invalid signature encoding',
+  'Signature must be 64 bytes',
+];
+
+/// Server messages that indicate the *nonce* itself is spent/stale/foreign
+/// (dana-nameserver challenge-auth ERR_EXPIRED / ERR_NO_CHALLENGE /
+/// ERR_MISMATCH). These require one fresh challenge.
+const List<String> _nonceRejectionPhrases = [
+  'Challenge nonce expired',
+  'Invalid or missing nonce',
+  'Nonce does not match',
+];
 
 class DanaAddressService {
   NameServerRepository nameServerRepository;
@@ -96,9 +128,15 @@ class DanaAddressService {
   /// [requestId] - The unique id for this request, can be useful for tracking requests.
   ///
   /// Returns [DanaAddressCreationResponse] with the created address or error details
+  /// [signChallenge] signs the server-issued challenge message with the
+  /// wallet-held spend key and returns the 64-byte signature hex. It is a
+  /// method parameter only (no field, no global): the service keeps its
+  /// `DanaAddressService(network: network)` constructor shape and stays
+  /// free of wallet state.
   Future<Bip353Address> registerUser({
     required String username,
     required String paymentCode,
+    required Future<String> Function(String message) signChallenge,
   }) async {
     final requestId = _generateUniqueId();
     final domain = await danaAddressDomain;
@@ -126,10 +164,118 @@ class DanaAddressService {
       rethrow;
     }
 
-    return await nameServerRepository.registerDanaAddress(
-        danaAddress: danaAddress,
-        paymentCode: paymentCode,
-        requestId: requestId);
+    // Step 2: request the challenge (message + nonce) from the name server.
+    var challenge = await _requestChallengeWithBackoff(
+      userName: username,
+      domain: domain,
+      spAddress: paymentCode,
+    );
+
+    var reSignsLeft = _maxReSignRetries;
+    var nonceRefreshesLeft = _maxNonceRefreshes;
+
+    while (true) {
+      // Proactive expiry guard: expiresAt is epoch-seconds (T2 model); the
+      // screen can sit open past the 300 s nonce TTL, so re-challenge before
+      // burning a signature on a doomed nonce.
+      final expiresAt = challenge.expiresAt;
+      if (expiresAt != null &&
+          DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000 >=
+              expiresAt - _challengeExpirySafetyMarginSeconds) {
+        Logger().i('Challenge nonce within expiry margin, re-challenging');
+        challenge = await _requestChallengeWithBackoff(
+          userName: username,
+          domain: domain,
+          spAddress: paymentCode,
+        );
+        continue;
+      }
+
+      // Step 3: sign the server message VERBATIM with the wallet-held key.
+      final signature = await signChallenge(challenge.message);
+
+      // Step 4: register with nonce + signature.
+      try {
+        return await nameServerRepository.registerDanaAddress(
+          danaAddress: danaAddress,
+          paymentCode: paymentCode,
+          requestId: requestId,
+          nonce: challenge.nonce,
+          signature: signature,
+        );
+      } on RegisterRejectedException catch (e) {
+        if (_matchesAny(e.message, _signatureVerificationPhrases) &&
+            reSignsLeft > 0) {
+          // Verify-before-burn keeps the nonce valid on a pure signature
+          // failure: re-sign the SAME message, at most once.
+          reSignsLeft--;
+          Logger().w(
+              'Registration rejected on signature verification, re-signing once: ${e.message}');
+          continue;
+        }
+        if (_matchesAny(e.message, _nonceRejectionPhrases) &&
+            nonceRefreshesLeft > 0) {
+          // Expired/unknown/mismatched nonce: one fresh challenge + register.
+          nonceRefreshesLeft--;
+          Logger().w(
+              'Registration rejected on nonce, refreshing challenge once: ${e.message}');
+          challenge = await _requestChallengeWithBackoff(
+            userName: username,
+            domain: domain,
+            spAddress: paymentCode,
+          );
+          continue;
+        }
+        rethrow;
+      }
+    }
+  }
+
+  bool _matchesAny(String message, List<String> phrases) =>
+      phrases.any((p) => message.toLowerCase().contains(p.toLowerCase()));
+
+  /// Extracts the server-provided message from a rejected response body
+  /// (JSON `message` field when present, raw body otherwise).
+  String _serverMessageFromBody(String body) {
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map && decoded['message'] is String) {
+        return decoded['message'] as String;
+      }
+    } catch (_) {
+      // Non-JSON body: fall back to the raw text.
+    }
+    return body;
+  }
+
+  /// POST /challenge with the 429 backoff schedule (2 s/5 s/15 s sleeps,
+  /// then re-challenge). Any non-429 rejection rethrows untouched; exhaust
+  /// of the schedule throws a plain Exception carrying the server message.
+  Future<NameServerChallengeResponse> _requestChallengeWithBackoff({
+    required String userName,
+    required String domain,
+    required String spAddress,
+  }) async {
+    for (var attempt = 0;; attempt++) {
+      try {
+        return await nameServerRepository.requestChallenge(
+          userName: userName,
+          domain: domain,
+          spAddress: spAddress,
+          requestId: _generateUniqueId(),
+        );
+      } on ChallengeRejectedException catch (e) {
+        if (e.status != 429) rethrow;
+        if (attempt >= _challenge429BackoffSeconds.length) {
+          throw Exception(
+              'Challenge request rejected (HTTP 429) after ${_challenge429BackoffSeconds.length} backoff retries: ${_serverMessageFromBody(e.body)}');
+        }
+        final seconds = _challenge429BackoffSeconds[attempt];
+        Logger().w(
+            'Challenge 429, backing off ${seconds}s (retry ${attempt + 1}/${_challenge429BackoffSeconds.length})');
+        await Future<void>.delayed(Duration(seconds: seconds));
+      }
+    }
   }
 
   /// Looks up dana addresses associated with a silent payment address.

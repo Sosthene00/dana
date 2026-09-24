@@ -333,6 +333,15 @@ class WalletState extends ChangeNotifier {
     );
   }
 
+  /// Signs a name-server registration challenge attestation with the
+  /// wallet-held spend key through the Rust bridge (the secret never crosses
+  /// the FFI boundary). Mirrors the signTransaction lookup+call shape in
+  /// signAndBroadcastUnsignedTx.
+  Future<String> signChallenge(String message) async {
+    final wallet = await getWalletFromSecureStorage();
+    return wallet.signRegistrationChallenge(message: message);
+  }
+
   Future<void> registerDanaAddress(String username) async {
     if (danaAddress != null) {
       throw Exception("Dana address already known");
@@ -340,7 +349,10 @@ class WalletState extends ChangeNotifier {
 
     Logger().i('Registering dana address with username: $username');
     final registeredAddress = await DanaAddressService(network: network)
-        .registerUser(username: username, paymentCode: receivePaymentCode);
+        .registerUser(
+            username: username,
+            paymentCode: receivePaymentCode,
+            signChallenge: signChallenge);
 
     // Registration successful
     Logger().i('Registration successful: $registeredAddress');
