@@ -22,6 +22,21 @@ run flags="":
 run-release:
     just run --release
 
+# Static gates, local == CI.
+# 'check' mirrors the CI format job (.github/workflows/flutter.yml) verbatim:
+# 'flutter pub get' then 'dart format --output=none --set-exit-if-changed lib'
+# (read-only: --output=none + --set-exit-if-changed never rewrite files).
+# 'analyze' is the additive clippy-equivalent diagnostic gate: errors are
+# fatal by analyzer default; warnings and infos are forced fatal.
+# Note: the tree carries pre-existing analyzer errors, so analyze (and
+# therefore check) exits non-zero on a pristine base until those are fixed.
+check: analyze
+    fvm flutter pub get
+    fvm dart format --output=none --set-exit-if-changed lib
+
+analyze:
+    fvm dart analyze --fatal-infos --fatal-warnings .
+
 format:
     fvm dart format ./lib
 
