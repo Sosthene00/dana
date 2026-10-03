@@ -27,8 +27,7 @@ class ChallengeRejectedException implements Exception {
   final String body;
 
   @override
-  String toString() =>
-      'ChallengeRejectedException(HTTP $status): $body';
+  String toString() => 'ChallengeRejectedException(HTTP $status): $body';
 }
 
 /// Raised by [NameServerRepository.registerDanaAddress] when the name
@@ -45,8 +44,7 @@ class RegisterRejectedException implements Exception {
   final String message;
 
   @override
-  String toString() =>
-      'RegisterRejectedException(HTTP $status): $message';
+  String toString() => 'RegisterRejectedException(HTTP $status): $message';
 }
 
 class NameServerRepository {
@@ -107,14 +105,36 @@ class NameServerRepository {
     String? nonce,
     String? signature,
   }) async {
-    final request = NameServerRegisterRequest(
-      id: requestId,
-      userName: danaAddress.username,
-      domain: danaAddress.domain,
-      spAddress: paymentCode.encode(),
-      nonce: nonce,
-      signature: signature,
-    );
+    // The proof is atomic in the model: the default constructor carries
+    // no proof at all and [NameServerRegisterRequest.withChallenge] is
+    // the only way to attach one, requiring BOTH fields. Reaching this
+    // method with exactly one of the pair is a client bug, so it fails
+    // fast here instead of forking a body the nameserver would 401.
+    final NameServerRegisterRequest request;
+    if (nonce == null && signature == null) {
+      request = NameServerRegisterRequest(
+        id: requestId,
+        userName: danaAddress.username,
+        domain: danaAddress.domain,
+        spAddress: paymentCode.encode(),
+      );
+    } else {
+      if (nonce == null || signature == null) {
+        throw ArgumentError(
+          'registerDanaAddress: nonce and signature are atomic — pass '
+          'BOTH or neither (a half-proven registration is always 401ed '
+          'by a challenge-enforcing nameserver)',
+        );
+      }
+      request = NameServerRegisterRequest.withChallenge(
+        id: requestId,
+        userName: danaAddress.username,
+        domain: danaAddress.domain,
+        spAddress: paymentCode.encode(),
+        nonce: nonce,
+        signature: signature,
+      );
+    }
 
     Logger().d(
         'Registering dana address: $danaAddress with request ID: $requestId');
@@ -211,8 +231,7 @@ class NameServerRepository {
       } catch (e) {
         Logger().e('Failed to parse challenge response: $e');
         Logger().e('Response body: ${response.body}');
-        throw FormatException(
-            'Failed to parse challenge response: $e '
+        throw FormatException('Failed to parse challenge response: $e '
             '(status ${response.statusCode}, body ${response.body})');
       }
 
