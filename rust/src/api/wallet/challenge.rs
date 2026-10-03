@@ -44,7 +44,7 @@ pub fn sign_challenge(spend_secret: &str, message: &str) -> Result<String> {
 
 /// Core of [`sign_challenge`], factored out so tests can assert the digest
 /// path directly against raw-preimage signatures.
-fn sign_challenge_inner(sk: &SecretKey, message: &str) -> Result<secp256k1::schnorr::Signature> {
+pub(crate) fn sign_challenge_inner(sk: &SecretKey, message: &str) -> Result<secp256k1::schnorr::Signature> {
     if !message.starts_with(CHALLENGE_PREFIX) {
         return Err(anyhow!("challenge message must start with '{CHALLENGE_PREFIX}'"));
     }

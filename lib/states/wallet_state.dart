@@ -333,13 +333,24 @@ class WalletState extends ChangeNotifier {
     );
   }
 
+  /// Signs a name-server registration challenge attestation with the
+  /// wallet-held spend key through the FRB bridge
+  /// (`SpWallet::sign_registration_challenge` — the secret never crosses the
+  /// FFI boundary). Mirrors the getWalletFromSecureStorage+call shape of the
+  /// transaction signing path.
+  Future<String> signRegistrationChallenge(String message) async {
+    final wallet = await getWalletFromSecureStorage();
+    return wallet.signRegistrationChallenge(message: message);
+  }
+
   Future<void> registerDanaAddress(String username) async {
     if (danaAddress != null) {
       throw Exception("Dana address already known");
     }
 
     Logger().i('Registering dana address with username: $username');
-    final registeredAddress = await DanaAddressService(network: network)
+    final registeredAddress = await DanaAddressService(
+            network: network, signChallenge: signRegistrationChallenge)
         .registerUser(username: username, paymentCode: receivePaymentCode);
 
     // Registration successful
