@@ -26,15 +26,15 @@ class ChallengeRejectedException implements Exception {
   final String body;
 
   @override
-  String toString() =>
-      'ChallengeRejectedException(HTTP $status): $body';
+  String toString() => 'ChallengeRejectedException(HTTP $status): $body';
 }
 
 /// Raised by [NameServerRepository.registerDanaAddress] when the name
 /// server rejects a registration with HTTP 401 (missing/invalid challenge
 /// proof).
 class RegisterRejectedException implements Exception {
-  RegisterRejectedException(this.status, this.message);
+  RegisterRejectedException(this.status, this.message,
+      {this.reason = RegisterRejectReason.other});
 
   /// HTTP status code returned by the name server.
   final int status;
@@ -43,9 +43,71 @@ class RegisterRejectedException implements Exception {
   /// string `message`, else the raw response body.
   final String message;
 
+  /// Typed classification of this rejection, decided once on the repository
+  /// side (see [classifyRegisterRejectMessage]) where the server message is
+  /// understood. UI code branches on this instead of re-matching message
+  /// substrings, so copy stays honest and a message that merely mentions
+  /// 'nonce' cannot be mistaken for a spent-challenge rejection.
+  final RegisterRejectReason reason;
+
   @override
-  String toString() =>
-      'RegisterRejectedException(HTTP $status): $message';
+  String toString() => 'RegisterRejectedException(HTTP $status): $message';
+}
+
+/// Typed classification of a name-server registration rejection, decided once
+/// on the side that understands the server's rejection vocabulary (the
+/// repository, via [classifyRegisterRejectMessage]). UI code branches on this
+/// value instead of re-deriving policy from server message substrings.
+enum RegisterRejectReason {
+  /// The challenge nonce is expired, unknown, or mismatched: the server has
+  /// burned it and a fresh `/challenge` is required.
+  nonce,
+
+  /// The submitted signature failed verification. Under verify-before-burn
+  /// (nameserver 72a3917) this does not burn the nonce, so the same
+  /// challenge can be re-signed once.
+  signature,
+
+  /// Anything else the server rejected with HTTP 401.
+  other,
+}
+
+/// Server messages that indicate the challenge *signature* failed
+/// verification (dana-nameserver challenge-auth src/main.rs verification
+/// branch). These do not burn the nonce.
+const List<String> signatureVerificationPhrases = [
+  'Signature verification failed',
+  'Invalid signature hex',
+  'Invalid signature encoding',
+  'Signature must be 64 bytes',
+];
+
+/// Server messages that indicate the *nonce* itself is spent/stale/foreign
+/// (dana-nameserver challenge-auth ERR_EXPIRED / ERR_NO_CHALLENGE /
+/// ERR_MISMATCH). These require one fresh challenge.
+const List<String> nonceRejectionPhrases = [
+  'Challenge nonce expired',
+  'Invalid or missing nonce',
+  'Nonce does not match',
+];
+
+bool _matchesAnyPhrase(String message, List<String> phrases) =>
+    phrases.any((p) => message.toLowerCase().contains(p.toLowerCase()));
+
+/// Classifies a 401 `message` from the name server into a
+/// [RegisterRejectReason] by exact-phrase lookup against the server's
+/// rejection vocabulary. Unknown messages classify as
+/// [RegisterRejectReason.other]; a message that merely happens to mention
+/// 'nonce' (e.g. 'nonce must be hex') does not become
+/// [RegisterRejectReason.nonce].
+RegisterRejectReason classifyRegisterRejectMessage(String message) {
+  if (_matchesAnyPhrase(message, nonceRejectionPhrases)) {
+    return RegisterRejectReason.nonce;
+  }
+  if (_matchesAnyPhrase(message, signatureVerificationPhrases)) {
+    return RegisterRejectReason.signature;
+  }
+  return RegisterRejectReason.other;
 }
 
 class NameServerRepository {
@@ -153,7 +215,8 @@ class NameServerRepository {
         } catch (_) {
           // non-JSON error body: fall back to the raw body
         }
-        throw RegisterRejectedException(response.statusCode, serverMessage);
+        throw RegisterRejectedException(response.statusCode, serverMessage,
+            reason: classifyRegisterRejectMessage(serverMessage));
       }
       throw Exception(response.body);
     }

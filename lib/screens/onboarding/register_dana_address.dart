@@ -362,23 +362,9 @@ class _RegisterDanaAddressScreenState extends State<RegisterDanaAddressScreen> {
   /// retries only. Anything unrecognised keeps the generic displayError
   /// path.
   void _showRegistrationError(Object e) {
-    final stringified = e.toString();
-    String? copy;
-    if (e is FormatException) {
-      copy = 'Invalid Dana address';
-    } else if (e is RegisterRejectedException &&
-        e.message.toLowerCase().contains('nonce')) {
-      // The service already spent its one automatic nonce refresh before
-      // rethrowing; this is the give-up copy.
-      copy = 'Registration timed out, retrying...';
-    } else if ((e is ChallengeRejectedException && e.status == 429) ||
-        stringified.contains('HTTP 429')) {
-      // Backoff schedule exhausted (the service rethrows a plain Exception
-      // whose text carries HTTP 429) or a 429 escaped elsewhere.
-      copy = 'Too many pending registrations, try again in a few minutes';
-    }
+    final copy = e.registrationErrorCopy();
     if (copy != null) {
-      Logger().e('Registration failed: $stringified');
+      Logger().e('Registration failed: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(copy)),
@@ -640,5 +626,47 @@ class _RegisterDanaAddressScreenState extends State<RegisterDanaAddressScreen> {
         footer: footer,
       ),
     );
+  }
+}
+
+/// User-facing snackbar copy for an exception escaping registration, or null
+/// when the caller should fall back to the generic displayError path (which
+/// surfaces the raw server message).
+///
+/// A pure classifier extracted from the screen's error handler so it is unit
+/// testable without a widget tree. It branches on the typed
+/// [RegisterRejectedException.reason] assigned once on the repository side;
+/// the UI never re-derives policy from server message substrings:
+///  * only an exhausted nonce rejection (the service already spent its one
+///    automatic refresh) gets the give-up copy, and that copy is honest: it
+///    promises no automatic retry that no longer happens;
+///  * a signature or other rejection - including one whose message merely
+///    mentions 'nonce' - falls through to the generic server-message path;
+///  * FormatException and the exhausted 429 backoff keep their existing copy.
+extension RegistrationErrorCopy on Object {
+  String? registrationErrorCopy() {
+    final e = this;
+    if (e is FormatException) {
+      return 'Invalid Dana address';
+    } else if (e is RegisterRejectedException) {
+      switch (e.reason) {
+        case RegisterRejectReason.nonce:
+          // The service burned its single automatic nonce refresh before
+          // rethrowing, so this arm is the give-up copy. It must not claim
+          // 'timed out' (a 401 rejection is never a timeout) nor promise
+          // 'retrying...' (no automatic retry happens from here).
+          return 'Registration was rejected, please try again';
+        case RegisterRejectReason.signature:
+        case RegisterRejectReason.other:
+          // Surface the server message via the generic displayError path.
+          return null;
+      }
+    } else if ((e is ChallengeRejectedException && e.status == 429) ||
+        e.toString().contains('HTTP 429')) {
+      // Backoff schedule exhausted (the service rethrows a plain Exception
+      // whose text carries HTTP 429) or a 429 escaped elsewhere.
+      return 'Too many pending registrations, try again in a few minutes';
+    }
+    return null;
   }
 }

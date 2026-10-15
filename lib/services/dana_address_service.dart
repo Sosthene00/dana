@@ -22,25 +22,6 @@ const List<int> _challenge429BackoffSeconds = [2, 5, 15];
 // refresh proactively inside this margin (epoch-seconds comparison).
 const int _challengeExpirySafetyMarginSeconds = 10;
 
-/// Server messages that indicate the challenge *signature* failed
-/// verification (dana-nameserver challenge-auth src/main.rs verification
-/// branch). These do not burn the nonce.
-const List<String> _signatureVerificationPhrases = [
-  'Signature verification failed',
-  'Invalid signature hex',
-  'Invalid signature encoding',
-  'Signature must be 64 bytes',
-];
-
-/// Server messages that indicate the *nonce* itself is spent/stale/foreign
-/// (dana-nameserver challenge-auth ERR_EXPIRED / ERR_NO_CHALLENGE /
-/// ERR_MISMATCH). These require one fresh challenge.
-const List<String> _nonceRejectionPhrases = [
-  'Challenge nonce expired',
-  'Invalid or missing nonce',
-  'Nonce does not match',
-];
-
 class DanaAddressService {
   NameServerRepository nameServerRepository;
   final Network network;
@@ -204,8 +185,9 @@ class DanaAddressService {
           signature: signature,
         );
       } on RegisterRejectedException catch (e) {
-        if (_matchesAny(e.message, _signatureVerificationPhrases) &&
-            reSignsLeft > 0) {
+        // Classify on the typed reason assigned by the repository, exactly
+        // once, instead of re-matching server message substrings here.
+        if (e.reason == RegisterRejectReason.signature && reSignsLeft > 0) {
           // Verify-before-burn keeps the nonce valid on a pure signature
           // failure: re-sign the SAME message, at most once.
           reSignsLeft--;
@@ -213,8 +195,7 @@ class DanaAddressService {
               'Registration rejected on signature verification, re-signing once: ${e.message}');
           continue;
         }
-        if (_matchesAny(e.message, _nonceRejectionPhrases) &&
-            nonceRefreshesLeft > 0) {
+        if (e.reason == RegisterRejectReason.nonce && nonceRefreshesLeft > 0) {
           // Expired/unknown/mismatched nonce: one fresh challenge + register.
           nonceRefreshesLeft--;
           Logger().w(
@@ -230,9 +211,6 @@ class DanaAddressService {
       }
     }
   }
-
-  bool _matchesAny(String message, List<String> phrases) =>
-      phrases.any((p) => message.toLowerCase().contains(p.toLowerCase()));
 
   /// Extracts the server-provided message from a rejected response body
   /// (JSON `message` field when present, raw body otherwise).
