@@ -33,8 +33,7 @@ class ChallengeRejectedException implements Exception {
 /// server rejects a registration with HTTP 401 (missing/invalid challenge
 /// proof).
 class RegisterRejectedException implements Exception {
-  RegisterRejectedException(this.status, this.message,
-      {this.reason = RegisterRejectReason.other});
+  RegisterRejectedException(this.status, this.message, {required this.reason});
 
   /// HTTP status code returned by the name server.
   final int status;
@@ -59,16 +58,8 @@ class RegisterRejectedException implements Exception {
 /// repository, via [classifyRegisterRejectMessage]). UI code branches on this
 /// value instead of re-deriving policy from server message substrings.
 enum RegisterRejectReason {
-  /// The challenge nonce is expired, unknown, or mismatched: the server has
-  /// burned it and a fresh `/challenge` is required.
   nonce,
-
-  /// The submitted signature failed verification. Under verify-before-burn
-  /// (nameserver 72a3917) this does not burn the nonce, so the same
-  /// challenge can be re-signed once.
   signature,
-
-  /// Anything else the server rejected with HTTP 401.
   other,
 }
 

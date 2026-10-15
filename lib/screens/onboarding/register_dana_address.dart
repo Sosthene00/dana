@@ -362,7 +362,7 @@ class _RegisterDanaAddressScreenState extends State<RegisterDanaAddressScreen> {
   /// retries only. Anything unrecognised keeps the generic displayError
   /// path.
   void _showRegistrationError(Object e) {
-    final copy = e.registrationErrorCopy();
+    final copy = registrationErrorCopy(e);
     if (copy != null) {
       Logger().e('Registration failed: $e');
       if (mounted) {
@@ -643,30 +643,24 @@ class _RegisterDanaAddressScreenState extends State<RegisterDanaAddressScreen> {
 ///  * a signature or other rejection - including one whose message merely
 ///    mentions 'nonce' - falls through to the generic server-message path;
 ///  * FormatException and the exhausted 429 backoff keep their existing copy.
-extension RegistrationErrorCopy on Object {
-  String? registrationErrorCopy() {
-    final e = this;
-    if (e is FormatException) {
-      return 'Invalid Dana address';
-    } else if (e is RegisterRejectedException) {
-      switch (e.reason) {
-        case RegisterRejectReason.nonce:
-          // The service burned its single automatic nonce refresh before
-          // rethrowing, so this arm is the give-up copy. It must not claim
-          // 'timed out' (a 401 rejection is never a timeout) nor promise
-          // 'retrying...' (no automatic retry happens from here).
-          return 'Registration was rejected, please try again';
-        case RegisterRejectReason.signature:
-        case RegisterRejectReason.other:
-          // Surface the server message via the generic displayError path.
-          return null;
-      }
-    } else if ((e is ChallengeRejectedException && e.status == 429) ||
-        e.toString().contains('HTTP 429')) {
-      // Backoff schedule exhausted (the service rethrows a plain Exception
-      // whose text carries HTTP 429) or a 429 escaped elsewhere.
-      return 'Too many pending registrations, try again in a few minutes';
-    }
-    return null;
+String? registrationErrorCopy(Object e) {
+  if (e is FormatException) {
+    return 'Invalid Dana address';
+  } else if (e is RegisterRejectedException) {
+    // Only the exhausted-nonce case gets the give-up copy: the service
+    // burned its single automatic nonce refresh before rethrowing. The copy
+    // must not claim 'timed out' (a 401 rejection is never a timeout) nor
+    // promise 'retrying...' (no automatic retry happens from here).
+    // Signature and other rejections surface the server message via the
+    // generic displayError path instead.
+    return e.reason == RegisterRejectReason.nonce
+        ? 'Registration was rejected, please try again'
+        : null;
+  } else if ((e is ChallengeRejectedException && e.status == 429) ||
+      e.toString().contains('HTTP 429')) {
+    // Backoff schedule exhausted (the service rethrows a plain Exception
+    // whose text carries HTTP 429) or a 429 escaped elsewhere.
+    return 'Too many pending registrations, try again in a few minutes';
   }
+  return null;
 }

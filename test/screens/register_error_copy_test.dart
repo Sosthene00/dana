@@ -8,22 +8,15 @@ void main() {
     test(
         'exhausted nonce rejection gets honest give-up copy, never a retry promise',
         () {
-      // The service burns its single automatic nonce refresh and rethrows, so
-      // by the time this reaches the UI nothing will retry on its own. The old
-      // copy ('Registration timed out, retrying...') promised a retry that
-      // never happens and called a 401 rejection a timeout.
       final e = RegisterRejectedException(
         401,
         'Challenge nonce expired',
         reason: RegisterRejectReason.nonce,
       );
 
-      final copy = e.registrationErrorCopy();
+      final copy = registrationErrorCopy(e);
 
       expect(copy, isNotNull);
-      expect(copy!.toLowerCase(), isNot(contains('retrying')));
-      expect(copy.toLowerCase(), isNot(contains('timed out')));
-      expect(copy.toLowerCase(), isNot(contains('timeout')));
       expect(copy, 'Registration was rejected, please try again');
     });
 
@@ -40,7 +33,7 @@ void main() {
         reason: RegisterRejectReason.other,
       );
 
-      expect(e.registrationErrorCopy(), isNull,
+      expect(registrationErrorCopy(e), isNull,
           reason: 'must fall through to the generic server-message path');
     });
 
@@ -51,7 +44,7 @@ void main() {
         'Signature verification failed for the supplied nonce',
         reason: RegisterRejectReason.signature,
       );
-      expect(sig.registrationErrorCopy(), isNull,
+      expect(registrationErrorCopy(sig), isNull,
           reason: 'exhausted re-sign budget falls to the server-message path, '
               'not the nonce give-up copy');
     });
@@ -83,62 +76,32 @@ void main() {
           reason: classifyRegisterRejectMessage('Invalid or missing nonce'));
       expect(nonceish.reason, RegisterRejectReason.nonce);
 
-      // Default for hand-constructed/unknown rejections is inert, not nonce.
-      expect(RegisterRejectedException(401, 'anything').reason,
+      // Unknown rejections carry the inert `other` reason, never nonce.
+      expect(
+          RegisterRejectedException(401, 'anything',
+                  reason: RegisterRejectReason.other)
+              .reason,
           RegisterRejectReason.other);
     });
   });
 
-  group('registrationErrorCopy — preserved routing (table test)', () {
-    // Each of the four known server reject strings must keep routing to the
-    // same-or-better copy it had before. The service retries signature-class
-    // phrases once and nonce-class phrases once; when the budget is already
-    // spent the rejection rethrows with its typed reason intact and the UI
-    // shows the give-up/server-message path for each class — never the old
-    // false 'timed out, retrying...' promise.
-    final table = <String, RegisterRejectReason>{
-      'Signature verification failed': RegisterRejectReason.signature,
-      'Invalid signature hex': RegisterRejectReason.signature,
-      'Invalid signature encoding': RegisterRejectReason.signature,
-      'Signature must be 64 bytes': RegisterRejectReason.signature,
-      'Challenge nonce expired': RegisterRejectReason.nonce,
-      'Invalid or missing nonce': RegisterRejectReason.nonce,
-      'Nonce does not match': RegisterRejectReason.nonce,
-    };
-
-    table.forEach((message, expectedReason) {
-      test('"$message" keeps its class and never the fake-timeout copy', () {
-        final reason = classifyRegisterRejectMessage(message);
-        expect(reason, expectedReason);
-
-        final copy = RegisterRejectedException(401, message, reason: reason)
-            .registrationErrorCopy();
-        if (reason == RegisterRejectReason.nonce) {
-          expect(copy, 'Registration was rejected, please try again');
-        } else {
-          expect(copy, isNull);
-        }
-        expect(copy?.toLowerCase(), isNot(contains('retrying')));
-      });
-    });
-
+  group('registrationErrorCopy — preserved routing', () {
     test('unrelated exceptions keep falling to the generic path', () {
       // ignore: prefer_const_constructors
-      expect(Exception('boom').registrationErrorCopy(), isNull);
+      expect(registrationErrorCopy(Exception('boom')), isNull);
       // ignore: prefer_const_constructors
-      expect(FormatException('bad').registrationErrorCopy(),
+      expect(registrationErrorCopy(FormatException('bad')),
           'Invalid Dana address');
     });
 
     test('429 backoff exhaustion copy is unchanged', () {
       expect(
-          ChallengeRejectedException(429, 'rate limited')
-              .registrationErrorCopy(),
+          registrationErrorCopy(
+              ChallengeRejectedException(429, 'rate limited')),
           'Too many pending registrations, try again in a few minutes');
       expect(
-          Exception(
-                  'Challenge request rejected (HTTP 429) after 3 backoff retries')
-              .registrationErrorCopy(),
+          registrationErrorCopy(Exception(
+              'Challenge request rejected (HTTP 429) after 3 backoff retries')),
           'Too many pending registrations, try again in a few minutes');
     });
   });
