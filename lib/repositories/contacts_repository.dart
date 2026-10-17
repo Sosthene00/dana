@@ -1,6 +1,7 @@
 import 'package:danawallet/data/models/bip353_address.dart';
 import 'package:danawallet/data/models/contact_field.dart';
 import 'package:danawallet/data/models/contact.dart';
+import 'package:danawallet/extensions/silent_payment_code.dart';
 import 'package:danawallet/repositories/database_helper.dart';
 import 'package:logger/logger.dart';
 import 'package:sqflite/sqflite.dart';
@@ -55,6 +56,17 @@ class ContactsRepository {
 
     if (maps.isEmpty) return null;
 
+    // Same policy as getAllContacts' quarantine, without the destructive
+    // delete: a single-row getter reports a legacy bad row as missing
+    // instead of throwing uncaught; the list pass removes it on next open.
+    if (!_hasParseablePaymentCode(maps.first)) {
+      Logger().w(
+        'Skipping contact id=${maps.first['id']}: stored paymentCode is not '
+        'a valid silent payment code.',
+      );
+      return null;
+    }
+
     final contact = Contact.fromMap(maps.first);
 
     if (loadCustomFields) {
@@ -70,10 +82,21 @@ class ContactsRepository {
     final maps = await db.query(
       'contacts',
       where: 'bip353Address = ?',
-      whereArgs: [bip353Address],
+      whereArgs: [bip353Address.toString()],
     );
 
     if (maps.isEmpty) return null;
+
+    // Same policy as getAllContacts' quarantine, without the destructive
+    // delete: a single-row getter reports a legacy bad row as missing
+    // instead of throwing uncaught; the list pass removes it on next open.
+    if (!_hasParseablePaymentCode(maps.first)) {
+      Logger().w(
+        'Skipping contact id=${maps.first['id']}: stored paymentCode is not '
+        'a valid silent payment code.',
+      );
+      return null;
+    }
 
     final contact = Contact.fromMap(maps.first);
 
@@ -90,6 +113,8 @@ class ContactsRepository {
       'contacts',
       orderBy: 'name COLLATE NOCASE ASC',
     );
+
+    maps = await _quarantineUnparseablePaymentCodes(db, maps);
 
     try {
       if (await _collapseDuplicatePaymentCodes(db, maps)) {
@@ -114,6 +139,40 @@ class ContactsRepository {
     }
 
     return contacts;
+  }
+
+  /// Removes and deletes rows whose stored paymentCode cannot be parsed.
+  ///
+  /// A single legacy row written before payment-code validation existed must
+  /// not brick the contacts screen: [Contact.fromMap] hard-parses the column,
+  /// so unparseable rows are quarantined (skipped and deleted by id) before
+  /// any [Contact.fromMap] call and before the collapse sweep, which keeps
+  /// its own try/catch as a backstop.
+  Future<List<Map<String, Object?>>> _quarantineUnparseablePaymentCodes(
+    Database db,
+    List<Map<String, Object?>> maps,
+  ) async {
+    final valid = <Map<String, Object?>>[];
+    for (final map in maps) {
+      if (_hasParseablePaymentCode(map)) {
+        valid.add(map);
+        continue;
+      }
+      final id = map['id'];
+      Logger().w(
+        'Quarantining contact id=$id: stored paymentCode is not a valid '
+        'silent payment code; the row is skipped and removed.',
+      );
+      if (id is int) {
+        await db.delete('contacts', where: 'id = ?', whereArgs: [id]);
+      }
+    }
+    return valid;
+  }
+
+  bool _hasParseablePaymentCode(Map<String, Object?> map) {
+    final raw = map['paymentCode'];
+    return raw is String && tryParseSilentPaymentCode(raw) != null;
   }
 
   /// Rewrites a lone non-canonical payment code in place. Rows that parse to
