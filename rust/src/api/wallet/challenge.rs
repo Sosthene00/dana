@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use flutter_rust_bridge::frb;
 use spdk_wallet::bitcoin::hashes::{sha256, Hash};
 use spdk_wallet::bitcoin::secp256k1::{self, Keypair, Message, SecretKey};
 use std::str::FromStr;
@@ -10,8 +9,9 @@ use std::str::FromStr;
 /// this from turning into an arbitrary-string signing oracle on the spend key.
 pub const CHALLENGE_PREFIX: &str = "dana-register:";
 
-/// Lowercase hex of a serialized byte array.
-fn to_hex(bytes: &[u8]) -> String {
+/// Lowercase hex of a serialized byte array. Shared by both challenge signers
+/// so the wallet-held FFI path and this helper render identical strings.
+pub(crate) fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
 }
 
@@ -29,24 +29,33 @@ fn challenge_digest(message: &str) -> [u8; 32] {
 /// `raw_preimage_signature_does_not_verify`, which locks that contract with
 /// the nameserver). Returns the 64-byte signature as lowercase hex.
 ///
-/// The spend secret crosses the FFI boundary as hex here on purpose: this is
-/// a pure signing oracle (message string in, signature string out) and needs
-/// no wallet state. We deliberately do *not* reuse `ApiSpendKey` for the
-/// secret: the established FRB key pattern (`ApiScanKey`/`ApiSpendKey`,
-/// wallet.rs:46) is a JSON-encoded wallet handle passed by value through
-/// `encode`/`decode`, which does not fit a stateless string-in/string-out
-/// oracle call.
-#[frb(sync)]
-pub fn sign_challenge(spend_secret: &str, message: &str) -> Result<String> {
+/// Crate-internal on purpose. The only FFI-reachable challenge signer is
+/// `SpWallet::sign_registration_challenge` (wallet.rs), which takes the key out
+/// of the loaded client itself, so no spend secret ever crosses the bridge.
+/// This string-in / hex-out form exists to exercise the two legs the shared
+/// core cannot be reached through — `SecretKey::from_str` parsing (errors,
+/// never panics) and canonical hex rendering of the serialized signature — and
+/// is called by this module's tests. It deliberately carries no `#[frb]`
+/// marker: the codegen scans `rust/src/api/**/*.rs` for those attributes, so an
+/// exported form here would regenerate a Dart
+/// `signChallenge(spendSecret:, message:)` that copies a spend secret into a
+/// non-zeroizable, GC-managed Dart String, for no capability the wallet-held
+/// signer does not already provide.
+pub(crate) fn sign_challenge(spend_secret: &str, message: &str) -> Result<String> {
     let sk = SecretKey::from_str(spend_secret)?;
     Ok(to_hex(&sign_challenge_inner(&sk, message)?.serialize()))
 }
 
 /// Core of [`sign_challenge`], factored out so tests can assert the digest
 /// path directly against raw-preimage signatures.
-pub(crate) fn sign_challenge_inner(sk: &SecretKey, message: &str) -> Result<secp256k1::schnorr::Signature> {
+pub(crate) fn sign_challenge_inner(
+    sk: &SecretKey,
+    message: &str,
+) -> Result<secp256k1::schnorr::Signature> {
     if !message.starts_with(CHALLENGE_PREFIX) {
-        return Err(anyhow!("challenge message must start with '{CHALLENGE_PREFIX}'"));
+        return Err(anyhow!(
+            "challenge message must start with '{CHALLENGE_PREFIX}'"
+        ));
     }
 
     let secp = secp256k1::Secp256k1::signing_only();
@@ -67,7 +76,8 @@ mod tests {
     /// Fixed spend secret (sk = 1) so the produced signature is a
     /// reproducible vector.
     const SK_HEX: &str = "0000000000000000000000000000000000000000000000000000000000000001";
-    const MSG: &str = "dana-register:9f2c7a4e1b8d3f6a05c2e8b47d1a9f3c6e0b2a8d4f17c3e9a2b5d8f0c1e4a7b9";
+    const MSG: &str =
+        "dana-register:9f2c7a4e1b8d3f6a05c2e8b47d1a9f3c6e0b2a8d4f17c3e9a2b5d8f0c1e4a7b9";
 
     /// The (x-only, even-parity-normalised) verification key belonging to
     /// `sk`, via the 0.29 `SecretKey::x_only_public_key` path.

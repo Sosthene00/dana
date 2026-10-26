@@ -51,18 +51,17 @@ impl SpWallet {
     /// `SpendKey`->`SecretKey` route: `SpClient::try_secret_spend_key`
     /// (pinned spdk c1262f0, spdk-wallet/src/client/client.rs:72) clones the
     /// held key and errors on watch-only (`SpendKey::Public`) wallets.
-    /// Shares the exact `challenge::sign_challenge_inner` core the
-    /// standalone `sign_challenge` oracle uses (byte-identical by
-    /// construction).
+    /// This is the only `#[frb]`-marked challenge signer: the spend secret
+    /// stays inside Rust and only the signature hex is returned. It shares
+    /// the `challenge::sign_challenge_inner` core *and* the `challenge::to_hex`
+    /// rendering used by the crate-internal `challenge::sign_challenge`
+    /// helper, so signatures and their hex encoding are byte-identical by
+    /// construction.
     #[frb(sync)]
     pub fn sign_registration_challenge(&self, message: String) -> Result<String> {
         let sk = self.client.try_secret_spend_key()?;
         let sig = challenge::sign_challenge_inner(&sk, &message)?;
-        Ok(sig
-            .serialize()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect())
+        Ok(challenge::to_hex(&sig.serialize()))
     }
 }
 
