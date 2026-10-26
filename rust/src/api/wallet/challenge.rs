@@ -183,18 +183,32 @@ mod tests {
         // round-trip through `Signature::from_slice` (which only accepts the
         // canonical 64-byte serialization) and verify. A non-canonical
         // 64-byte output is therefore never produced.
-        let s1 = "01".repeat(63);
-        let s2 = "6b".repeat(64);
-        for secret in [SK_HEX, &s1[..], &s2[..]] {
-            if let Ok(sig_hex) = sign_challenge(secret, MSG) {
-                let bytes = from_hex(&sig_hex).expect("output is even-length lowercase hex");
-                assert_eq!(bytes.len(), 64);
-                let sig = Signature::from_slice(&bytes)
-                    .expect("output must be a canonical 64-byte schnorr signature");
-                let sk = SecretKey::from_str(secret).unwrap();
-                let msg = Message::from_digest(challenge_digest(MSG));
-                verify(&sig, &msg, &sk).unwrap();
-            }
+        //
+        // Every vector must be a *well-formed* 32-byte secret — exactly 64 hex
+        // chars, in `[1, n-1]` — and must actually sign. `SecretKey::from_str`
+        // rejects a wrong-length string, so an `Err` here used to skip the
+        // assertions below silently: `"01".repeat(63)` (126 chars) and
+        // `"6b".repeat(64)` (128 chars) left this test, despite its name,
+        // exercising only `SK_HEX` (finding t_a2f77bb3). The `expect` and the
+        // length pin make a skipped vector fail the test instead of pass it.
+        // Ill-formed input is still covered — as rejections — by
+        // `malformed_secret_hex_is_rejected`.
+        let vectors = [SK_HEX.to_owned(), "01".repeat(32), "6b".repeat(32)];
+        for secret in &vectors {
+            assert_eq!(
+                secret.len(),
+                64,
+                "test vector must be a well-formed 32-byte secret"
+            );
+            let sig_hex = sign_challenge(secret, MSG)
+                .expect("a well-formed 32-byte secret must sign, never be skipped");
+            let bytes = from_hex(&sig_hex).expect("output is even-length lowercase hex");
+            assert_eq!(bytes.len(), 64);
+            let sig = Signature::from_slice(&bytes)
+                .expect("output must be a canonical 64-byte schnorr signature");
+            let sk = SecretKey::from_str(secret).unwrap();
+            let msg = Message::from_digest(challenge_digest(MSG));
+            verify(&sig, &msg, &sk).expect("canonical output must verify under its own key");
         }
     }
 }
