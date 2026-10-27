@@ -106,9 +106,15 @@ class TransactionsRepository {
     List<Recipient> result = List.empty(growable: true);
 
     for (final row in res) {
-      result.add(Recipient(
+      // Lossy on purpose: legacy pre-validation builds could persist an
+      // OP_RETURN payload (lowercase hex) or an outright unparseable string
+      // in this column. parseLossy degrades such a row to a Recipient that
+      // still carries the raw payload and still counts its amount (mainline
+      // parity), instead of aborting getAllTransactions for the whole wallet.
+result.add(Recipient(
+
           paymentCode:
-              PaymentCode.parse(address: row['payment_code'] as String),
+              PaymentCode.parseLossy(address: row['payment_code'] as String),
           amount: Amount(field0: BigInt.from(row['amount_sat'] as int))));
     }
 

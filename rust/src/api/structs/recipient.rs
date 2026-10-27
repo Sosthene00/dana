@@ -4,6 +4,7 @@ use anyhow::Result;
 use flutter_rust_bridge::frb;
 use serde::{Deserialize, Serialize};
 use spdk_wallet::bitcoin::address::NetworkUnchecked;
+use spdk_wallet::bitcoin::hex::FromHex;
 use spdk_wallet::bitcoin::{Address, AddressType};
 use spdk_wallet::client::RecipientAddress as SpRecipientAddress;
 use spdk_wallet::silentpayments::Network as SpNetwork;
@@ -31,11 +32,27 @@ pub enum PaymentCodeKind {
 /// bech32m input is stored lowercase; Base58Check case is preserved.
 ///
 /// The inner value can still be an OP_RETURN output when it comes from the
-/// wallet. [`PaymentCode::parse`] never produces one, and
-/// [`PaymentCode::kind`] returns an error for it.
+/// wallet, and the degraded `Raw` carrier can hold any unparseable legacy
+/// payload. [`PaymentCode::parse`] never produces either, and
+/// [`PaymentCode::kind`] returns an error for both.
 #[derive(Debug, Clone, PartialEq)]
 #[frb(opaque)]
-pub struct PaymentCode(SpRecipientAddress);
+pub struct PaymentCode(Repr);
+
+/// How a stored [`PaymentCode`] is carried internally.
+///
+/// `Address` holds a code produced by [`PaymentCode::parse`]. `Raw` is the
+/// degraded carrier written by [`PaymentCode::parse_lossy`] when a payload
+/// coming from storage cannot be parsed: hex payloads become
+/// `Address(Data(..))` (the same rule the wallet's `RecipientAddress::try_from`
+/// uses), anything else is kept verbatim. A `Raw` code never throws on load,
+/// is never a [`PaymentCodeKind`], never equals the change code, yet still
+/// contributes its amount to the send total — mainline accounting parity.
+#[derive(Debug, Clone, PartialEq)]
+enum Repr {
+    Address(SpRecipientAddress),
+    Raw(String),
+}
 
 impl PaymentCode {
     /// Parse a silent payment code, segwit v0 address, taproot address, or
@@ -45,6 +62,28 @@ impl PaymentCode {
     #[frb(sync)]
     pub fn parse(address: String) -> Result<Self> {
         Self::parse_as_str(address.as_str())
+    }
+
+    /// Lossy companion of [`PaymentCode::parse`] for storage loads.
+    ///
+    /// Never fails: payloads that are not a silent payment / segwit v0 /
+    /// taproot / Base58Check address are kept as a degraded code — a
+    /// hex-decodable payload marshals as an OP_RETURN `Data` code (the same
+    /// rule the wallet's `RecipientAddress::try_from` uses), anything else
+    /// as a raw carrier of the text verbatim. Degraded codes keep their
+    /// amount in [`SilentPaymentUnsignedTransaction::get_send_amount`], can
+    /// never match the change code, and report no [`PaymentCodeKind`]. The
+    /// strict [`PaymentCode::parse`] is unchanged, so user-input validation
+    /// on the send side keeps refusing exactly what it refused before.
+    #[frb(sync)]
+    pub fn parse_lossy(address: String) -> Self {
+        match Self::parse_as_str(&address) {
+            Ok(code) => code,
+            Err(_) => match Vec::from_hex(&address) {
+                Ok(payload) => Self(Repr::Address(SpRecipientAddress::Data(payload))),
+                Err(_) => Self(Repr::Raw(address)),
+            },
+        }
     }
 
     pub(crate) fn parse_as_str(address: &str) -> Result<Self> {
@@ -61,9 +100,9 @@ impl PaymentCode {
                 | AddressType::P2tr
                 | AddressType::P2pkh
                 | AddressType::P2sh,
-            ) => Ok(Self(SpRecipientAddress::LegacyAddress(
+            ) => Ok(Self(Repr::Address(SpRecipientAddress::LegacyAddress(
                 checked.into_unchecked(),
-            ))),
+            )))),
             Some(other) => Err(anyhow::anyhow!("unsupported address type: {other}")),
             None => Err(anyhow::anyhow!("unsupported address")),
         }
@@ -74,14 +113,17 @@ impl PaymentCode {
     /// Segwit, taproot, and silent payment codes are lowercase. Base58Check is unchanged.
     #[frb(sync)]
     pub fn encode(&self) -> String {
-        String::from(self.0.clone())
+        match &self.0 {
+            Repr::Address(address) => String::from(address.clone()),
+            Repr::Raw(raw) => raw.clone(),
+        }
     }
 
     #[frb(sync)]
     pub fn kind(&self) -> Result<PaymentCodeKind> {
         match &self.0 {
-            SpRecipientAddress::SpCode(_) => Ok(PaymentCodeKind::SilentPayment),
-            SpRecipientAddress::LegacyAddress(address) => {
+            Repr::Address(SpRecipientAddress::SpCode(_)) => Ok(PaymentCodeKind::SilentPayment),
+            Repr::Address(SpRecipientAddress::LegacyAddress(address)) => {
                 match address.assume_checked_ref().address_type() {
                     Some(AddressType::P2wpkh | AddressType::P2wsh | AddressType::P2tr) => {
                         Ok(PaymentCodeKind::Bech32)
@@ -91,7 +133,10 @@ impl PaymentCode {
                     None => Err(anyhow::anyhow!("unsupported address")),
                 }
             }
-            SpRecipientAddress::Data(_) => Err(anyhow::anyhow!("OP_RETURN is not a payment code")),
+            Repr::Address(SpRecipientAddress::Data(_)) => {
+                Err(anyhow::anyhow!("OP_RETURN is not a payment code"))
+            }
+            Repr::Raw(_) => Err(anyhow::anyhow!("unparseable payload is not a payment code")),
         }
     }
 
@@ -99,7 +144,7 @@ impl PaymentCode {
     #[frb(sync)]
     pub fn silent_payment_code(&self) -> Option<SilentPaymentCode> {
         match &self.0 {
-            SpRecipientAddress::SpCode(code) => Some(SilentPaymentCode::from(*code)),
+            Repr::Address(SpRecipientAddress::SpCode(code)) => Some(SilentPaymentCode::from(*code)),
             _ => None,
         }
     }
@@ -111,7 +156,7 @@ impl PaymentCode {
     #[frb(sync)]
     pub fn is_valid_for_network(&self, network: Network) -> bool {
         match &self.0 {
-            SpRecipientAddress::SpCode(code) => match (code.network(), &network) {
+            Repr::Address(SpRecipientAddress::SpCode(code)) => match (code.network(), &network) {
                 (SpNetwork::Mainnet, Network::Mainnet)
                 | (SpNetwork::Testnet, Network::Testnet3)
                 | (SpNetwork::Testnet, Network::Testnet4)
@@ -119,10 +164,11 @@ impl PaymentCode {
                 | (SpNetwork::Regtest, Network::Regtest) => true,
                 _ => false,
             },
-            SpRecipientAddress::LegacyAddress(address) => {
+            Repr::Address(SpRecipientAddress::LegacyAddress(address)) => {
                 address.is_valid_for_network(network.into())
             }
-            SpRecipientAddress::Data(_) => false,
+            Repr::Address(SpRecipientAddress::Data(_)) => false,
+            Repr::Raw(_) => false,
         }
     }
 
@@ -147,19 +193,24 @@ impl<'de> Deserialize<'de> for PaymentCode {
         D: serde::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        Self::parse(s).map_err(serde::de::Error::custom)
+        Ok(Self::parse_lossy(s))
     }
 }
 
 impl From<SpRecipientAddress> for PaymentCode {
     fn from(value: SpRecipientAddress) -> Self {
-        Self(value)
+        Self(Repr::Address(value))
     }
 }
 
 impl From<PaymentCode> for SpRecipientAddress {
     fn from(value: PaymentCode) -> Self {
-        value.0
+        match value.0 {
+            Repr::Address(address) => address,
+            // Degraded carriers only exist for display/total accounting of legacy
+            // rows; the wallet accepts a Data payload of these bytes.
+            Repr::Raw(raw) => SpRecipientAddress::Data(raw.into_bytes()),
+        }
     }
 }
 
@@ -303,5 +354,39 @@ mod tests {
     fn rejects_op_return_and_garbage() {
         assert!(PaymentCode::parse("deadbeef".to_string()).is_err());
         assert!(PaymentCode::parse("not-an-address".to_string()).is_err());
+    }
+
+    /// Gate-(b): Recipient marshalling for stored rows must never throw.
+    /// Mainline `Recipient.payment_code` was a plain `String`; the typed
+    /// refactor routed serde through `PaymentCode::parse`, which aborted
+    /// `transactionsRepository.getAllTransactions` at load for legacy
+    /// Data/OP_RETURN rows written by pre-validation builds.
+    #[test]
+    fn deserialize_is_lossy_safe_for_op_return_and_unparseable_payloads() {
+        // OP_RETURN payload as an older build stored it: lowercase hex.
+        const OP_RETURN_HEX: &str = "6a057468652074616c6b";
+        let json = format!(r#"{{"payment_code":"{OP_RETURN_HEX}","amount":10000}}"#);
+        let row: Recipient = serde_json::from_str(&json)
+            .unwrap_or_else(|e| panic!("load aborted in deserialize (bug): {e}"));
+        assert_eq!(row.amount.0, 10_000);
+        assert_eq!(row.payment_code.encode(), OP_RETURN_HEX);
+        assert!(row.payment_code.kind().is_err());
+        assert!(row.payment_code.silent_payment_code().is_none());
+        assert!(!row.payment_code.is_valid_for_network(Network::Mainnet));
+
+        // Outright unparseable garbage (not sp, not address, not hex) also
+        // loads, carrying the raw payload verbatim.
+        const GARBAGE: &str = "SP1QOURS-GARBAGE";
+        let garbage: Recipient = serde_json::from_str(
+            &format!(r#"{{"payment_code":"{GARBAGE}","amount":7}}"#),
+        )
+        .unwrap_or_else(|e| panic!("load aborted in deserialize (bug): {e}"));
+        assert_eq!(garbage.payment_code.encode(), GARBAGE);
+        assert!(garbage.payment_code.kind().is_err());
+
+        // The strict constructor keeps refusing exactly the same inputs, so
+        // user-input validation on the send side is untouched by the lossy fix.
+        assert!(PaymentCode::parse(OP_RETURN_HEX.to_string()).is_err());
+        assert!(PaymentCode::parse(GARBAGE.to_string()).is_err());
     }
 }
