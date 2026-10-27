@@ -64,9 +64,7 @@ impl FlutterLogger {
         // can keep the process alive across builds, so a panic from an old
         // binary version that held this lock may still be present.
         let sink = &*FLUTTER_LOGGER_STREAM_SINK;
-        let mut guard = sink
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut guard = sink.write().unwrap_or_else(|e| e.into_inner());
         let overriding = guard.is_some();
 
         *guard = Some(stream_sink);

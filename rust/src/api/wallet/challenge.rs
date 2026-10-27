@@ -46,7 +46,9 @@ pub fn sign_challenge(spend_secret: &str, message: &str) -> Result<String> {
 /// path directly against raw-preimage signatures.
 fn sign_challenge_inner(sk: &SecretKey, message: &str) -> Result<secp256k1::schnorr::Signature> {
     if !message.starts_with(CHALLENGE_PREFIX) {
-        return Err(anyhow!("challenge message must start with '{CHALLENGE_PREFIX}'"));
+        return Err(anyhow!(
+            "challenge message must start with '{CHALLENGE_PREFIX}'"
+        ));
     }
 
     let secp = secp256k1::Secp256k1::signing_only();
@@ -67,7 +69,8 @@ mod tests {
     /// Fixed spend secret (sk = 1) so the produced signature is a
     /// reproducible vector.
     const SK_HEX: &str = "0000000000000000000000000000000000000000000000000000000000000001";
-    const MSG: &str = "dana-register:9f2c7a4e1b8d3f6a05c2e8b47d1a9f3c6e0b2a8d4f17c3e9a2b5d8f0c1e4a7b9";
+    const MSG: &str =
+        "dana-register:9f2c7a4e1b8d3f6a05c2e8b47d1a9f3c6e0b2a8d4f17c3e9a2b5d8f0c1e4a7b9";
 
     /// The (x-only, even-parity-normalised) verification key belonging to
     /// `sk`, via the 0.29 `SecretKey::x_only_public_key` path.
