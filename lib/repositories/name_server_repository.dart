@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'package:danawallet/constants.dart';
 import 'package:danawallet/data/models/bip353_address.dart';
+import 'package:danawallet/data/models/name_server_challenge_request.dart';
+import 'package:danawallet/data/models/name_server_challenge_response.dart';
 import 'package:danawallet/data/models/name_server_info_response.dart';
 import 'package:danawallet/data/models/name_server_lookup_response.dart';
 import 'package:danawallet/data/models/name_server_register_request.dart';
@@ -8,9 +10,25 @@ import 'package:danawallet/data/models/name_server_register_response.dart';
 import 'package:danawallet/data/models/prefix_search_response.dart';
 import 'package:danawallet/generated/rust/api/structs/network.dart';
 import 'package:danawallet/generated/rust/api/structs/silent_payment_code.dart';
+import 'package:danawallet/generated/rust/api/wallet.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:logger/logger.dart';
+
+/// Raised before any register network call when the challenge has already
+/// expired at send time. The nonce is single-use and TTL-bound server-side
+/// (NONCE_TTL_SECS), so an expired challenge can never verify.
+class ChallengeExpiredException implements Exception {
+  /// When the challenge stopped being valid (UTC, from the epoch-seconds
+  /// `expires_at` on the challenge response).
+  final DateTime expiresAt;
+
+  const ChallengeExpiredException(this.expiresAt);
+
+  @override
+  String toString() => 'ChallengeExpiredException: challenge expired at '
+      '${expiresAt.toIso8601String()} before the register request was sent';
+}
 
 class NameServerRepository {
   String baseUrl;
@@ -47,27 +65,105 @@ class NameServerRepository {
     }
   }
 
+  /// Requests a registration challenge from the name server (POST
+  /// /v1/challenge).
+  ///
+  /// [danaAddress] and [paymentCode] describe the registration to attest;
+  /// [requestId] correlates the challenge with the following register call.
+  ///
+  /// Returns [NameServerChallengeResponse] with the verbatim message to
+  /// sign, the single-use nonce and the expiry timestamp (epoch seconds).
+  Future<NameServerChallengeResponse> requestChallenge({
+    required Bip353Address danaAddress,
+    required SilentPaymentCode paymentCode,
+    required String requestId,
+  }) async {
+    final request = NameServerChallengeRequest(
+      id: requestId,
+      userName: danaAddress.username,
+      domain: danaAddress.domain,
+      spAddress: paymentCode.encode(),
+    );
+
+    Logger().d('Requesting challenge with request ID: $requestId');
+    final response = await http.Client().post(
+      Uri.parse('$baseUrl/challenge'),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode(request.toJson()),
+    );
+
+    Logger().d('Challenge response status: ${response.statusCode}');
+    Logger().d('Challenge response body: ${response.body}');
+
+    if (response.statusCode == 200 || response.statusCode == 201) {
+      final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+      return NameServerChallengeResponse.fromJson(decoded);
+    } else {
+      Logger().e(
+          'Challenge request failed with HTTP ${response.statusCode} ${response.reasonPhrase ?? "Unknown"}');
+      Logger().e('Request URL: $baseUrl/challenge');
+      Logger().e('Response body: ${response.body}');
+
+      throw Exception(response.body);
+    }
+  }
+
   /// Creates a dana address by calling the external name_server
   ///
   /// [danaAddress] - The address to register.
   /// [paymentCode] - The silent payment code to register.
   /// [requestId] - The unique id for this request, can be useful for tracking requests.
+  /// [wallet] - The loaded SpWallet handle: its spend key signs the
+  /// challenge inside rust (the secret never crosses FFI).
   ///
   /// Returns [NameServerRegisterResponse] with the created address or error details
   Future<Bip353Address> registerDanaAddress({
     required Bip353Address danaAddress,
     required SilentPaymentCode paymentCode,
     required String requestId,
+    SpWallet? wallet,
   }) async {
+    // The challenge is signed with the spend key, which rust resolves from
+    // the wallet handle (the secret never crosses FFI).
+    final walletHandle = wallet;
+    if (walletHandle == null) {
+      throw ArgumentError(
+          'wallet is required: registration performs the challenge-auth handshake');
+    }
+
+    final challenge = await requestChallenge(
+      danaAddress: danaAddress,
+      paymentCode: paymentCode,
+      requestId: requestId,
+    );
+
+    // Pre-send reject: an already-expired challenge can never verify (the
+    // nonce is single-use and TTL-bound server-side), so fail before any
+    // register network call. expires_at is epoch seconds.
+    final rawExpiresAt = challenge.expiresAt;
+    if (rawExpiresAt != null) {
+      final expiresAt =
+          DateTime.fromMillisecondsSinceEpoch(rawExpiresAt * 1000, isUtc: true);
+      if (DateTime.now().toUtc().isAfter(expiresAt)) {
+        throw ChallengeExpiredException(expiresAt);
+      }
+    }
+
+    // The server's challenge_message() is the single source of the byte-exact
+    // format, so the message is signed VERBATIM (ca-03 item 1): no trim, no
+    // normalize, no interpolation anywhere on the message path.
+    final signature =
+        walletHandle.signRegistrationChallenge(message: challenge.message);
+
     final request = NameServerRegisterRequest(
       id: requestId,
       userName: danaAddress.username,
       domain: danaAddress.domain,
       spAddress: paymentCode.encode(),
-      // TODO(challenge-auth): replace placeholders with real values from the
-      // challenge flow (nonce + signature); arity required by model changes.
-      nonce: '',
-      signature: '',
+      nonce: challenge.nonce,
+      signature: signature,
     );
 
     Logger().d(
