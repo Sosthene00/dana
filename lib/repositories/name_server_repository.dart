@@ -30,6 +30,126 @@ class ChallengeExpiredException implements Exception {
       '${expiresAt.toIso8601String()} before the register request was sent';
 }
 
+/// Rejection-const texts sent verbatim by the nameserver as the JSON
+/// `message` field on a 401 from /register (src/main.rs @ 4eb6d2e, lines
+/// 30-32). Matched exactly so each server rejection maps to its own typed
+/// exception; anything else falls back to [RegisterRejectedException].
+const String _nameserverErrNoChallenge =
+    'Invalid or missing nonce. Please call /challenge first.';
+const String _nameserverErrExpired =
+    'Challenge nonce expired. Please request a new one.';
+const String _nameserverErrMismatch =
+    'Nonce does not match this request. Request a new one.';
+
+/// Base shape for typed challenge/register errors at the repository
+/// boundary (round-1 precedent, t_ae826482): the HTTP status plus the
+/// server's message - the JSON `message` field when the body carries one,
+/// else the raw body. Typed subclasses let callers distinguish the
+/// nameserver's rejection classes (back off on 429, re-request a challenge
+/// on 401) without string matching.
+abstract class NameServerChallengeException implements Exception {
+  /// HTTP status the nameserver answered with (401 / 429 / 400).
+  final int statusCode;
+
+  /// Server message: JSON `message` field when present, else raw body.
+  final String serverMessage;
+
+  const NameServerChallengeException(this.statusCode, this.serverMessage);
+
+  @override
+  String toString() =>
+      '$runtimeType(status: $statusCode, message: $serverMessage)';
+}
+
+/// 401 rejection from POST /register. Typed subclasses exist per nameserver
+/// rejection const; this class is also the fallback for 401 bodies carrying
+/// an unrecognized message.
+class RegisterRejectedException extends NameServerChallengeException {
+  const RegisterRejectedException(super.statusCode, super.serverMessage);
+}
+
+/// 401 ERR_NO_CHALLENGE - the register request references no live nonce
+/// ("Invalid or missing nonce. Please call /challenge first.").
+class NoChallengeException extends RegisterRejectedException {
+  const NoChallengeException(super.statusCode, super.serverMessage);
+}
+
+/// 401 ERR_EXPIRED - the nonce exists but expired server-side ("Challenge
+/// nonce expired. Please request a new one."). Distinct from the local
+/// pre-send [ChallengeExpiredException], which fires before any network
+/// call from the parsed `expires_at`.
+class ChallengeExpiredOnServerException extends RegisterRejectedException {
+  const ChallengeExpiredOnServerException(
+    super.statusCode,
+    super.serverMessage,
+  );
+}
+
+/// 401 ERR_MISMATCH - the nonce is bound to a different user / SP address /
+/// domain ("Nonce does not match this request. Request a new one.").
+class NonceMismatchException extends RegisterRejectedException {
+  const NonceMismatchException(super.statusCode, super.serverMessage);
+}
+
+/// 429 from the nameserver's per-peer caps (MAX_PENDING_NONCES /
+/// MAX_NONCES_PER_PEER / MAX_TRACKED_PEERS). Its own class so callers can
+/// distinguish it and back off instead of retrying immediately.
+class RegisterRateLimitedException extends NameServerChallengeException {
+  const RegisterRateLimitedException(super.statusCode, super.serverMessage);
+}
+
+/// 400 - request validation failure (e.g. non-canonical user_name/domain).
+class RegisterValidationException extends NameServerChallengeException {
+  const RegisterValidationException(super.statusCode, super.serverMessage);
+}
+
+/// Extracts the server message for a typed rejection: the JSON `message`
+/// field when the body parses as JSON and carries a non-empty string, else
+/// the raw body (round-1 shape, t_ae826482).
+String _nameserverMessageFrom(String body) {
+  try {
+    final decoded = jsonDecode(body);
+    if (decoded is Map) {
+      final message = decoded['message'];
+      if (message is String && message.isNotEmpty) {
+        return message;
+      }
+    }
+  } on FormatException {
+    // Not JSON: fall through to the raw body.
+  }
+  return body;
+}
+
+/// Maps a non-2xx challenge/register response to its typed exception at the
+/// repository boundary; returns null for statuses outside the typed surface
+/// (401 / 429 / 400), leaving the caller's generic error path untouched.
+NameServerChallengeException? challengeRegisterExceptionFor(
+  int statusCode,
+  String body,
+) {
+  final serverMessage = _nameserverMessageFrom(body);
+  switch (statusCode) {
+    case 401:
+      if (serverMessage == _nameserverErrNoChallenge) {
+        return NoChallengeException(statusCode, serverMessage);
+      }
+      if (serverMessage == _nameserverErrExpired) {
+        return ChallengeExpiredOnServerException(statusCode, serverMessage);
+      }
+      if (serverMessage == _nameserverErrMismatch) {
+        return NonceMismatchException(statusCode, serverMessage);
+      }
+      return RegisterRejectedException(statusCode, serverMessage);
+    case 429:
+      return RegisterRateLimitedException(statusCode, serverMessage);
+    case 400:
+      return RegisterValidationException(statusCode, serverMessage);
+    default:
+      return null;
+  }
+}
+
 class NameServerRepository {
   String baseUrl;
 
@@ -53,9 +173,7 @@ class NameServerRepository {
   Future<NameServerInfoResponse> getInfo() async {
     Logger().d("Getting name server info");
 
-    final response = await http.Client().get(
-      Uri.parse('$baseUrl/info'),
-    );
+    final response = await http.Client().get(Uri.parse('$baseUrl/info'));
 
     Logger().d('Info response body: ${response.body}');
     if (response.statusCode == 200) {
@@ -88,9 +206,7 @@ class NameServerRepository {
     Logger().d('Requesting challenge with request ID: $requestId');
     final response = await http.Client().post(
       Uri.parse('$baseUrl/challenge'),
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: {'Content-Type': 'application/json'},
       body: jsonEncode(request.toJson()),
     );
 
@@ -102,10 +218,18 @@ class NameServerRepository {
       return NameServerChallengeResponse.fromJson(decoded);
     } else {
       Logger().e(
-          'Challenge request failed with HTTP ${response.statusCode} ${response.reasonPhrase ?? "Unknown"}');
+        'Challenge request failed with HTTP ${response.statusCode} ${response.reasonPhrase ?? "Unknown"}',
+      );
       Logger().e('Request URL: $baseUrl/challenge');
       Logger().e('Response body: ${response.body}');
 
+      final typedError = challengeRegisterExceptionFor(
+        response.statusCode,
+        response.body,
+      );
+      if (typedError != null) {
+        throw typedError;
+      }
       throw Exception(response.body);
     }
   }
@@ -130,7 +254,8 @@ class NameServerRepository {
     final walletHandle = wallet;
     if (walletHandle == null) {
       throw ArgumentError(
-          'wallet is required: registration performs the challenge-auth handshake');
+        'wallet is required: registration performs the challenge-auth handshake',
+      );
     }
 
     final challenge = await requestChallenge(
@@ -144,8 +269,10 @@ class NameServerRepository {
     // register network call. expires_at is epoch seconds.
     final rawExpiresAt = challenge.expiresAt;
     if (rawExpiresAt != null) {
-      final expiresAt =
-          DateTime.fromMillisecondsSinceEpoch(rawExpiresAt * 1000, isUtc: true);
+      final expiresAt = DateTime.fromMillisecondsSinceEpoch(
+        rawExpiresAt * 1000,
+        isUtc: true,
+      );
       if (DateTime.now().toUtc().isAfter(expiresAt)) {
         throw ChallengeExpiredException(expiresAt);
       }
@@ -154,8 +281,9 @@ class NameServerRepository {
     // The server's challenge_message() is the single source of the byte-exact
     // format, so the message is signed VERBATIM (ca-03 item 1): no trim, no
     // normalize, no interpolation anywhere on the message path.
-    final signature =
-        walletHandle.signRegistrationChallenge(message: challenge.message);
+    final signature = walletHandle.signRegistrationChallenge(
+      message: challenge.message,
+    );
 
     final request = NameServerRegisterRequest(
       id: requestId,
@@ -167,12 +295,11 @@ class NameServerRepository {
     );
 
     Logger().d(
-        'Registering dana address: $danaAddress with request ID: $requestId');
+      'Registering dana address: $danaAddress with request ID: $requestId',
+    );
     final response = await http.Client().post(
       Uri.parse('$baseUrl/register'),
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: {'Content-Type': 'application/json'},
       body: jsonEncode(request.toJson()),
     );
 
@@ -187,20 +314,29 @@ class NameServerRepository {
       // Validate that we got the expected fields
       if (responseData.danaAddress == null || responseData.spAddress == null) {
         throw Exception(
-            'Server returned success but missing required fields. Response: ${response.body}');
+          'Server returned success but missing required fields. Response: ${response.body}',
+        );
       } else {
         Logger().i(
-            'Successfully registered dana address: ${responseData.danaAddress}');
+          'Successfully registered dana address: ${responseData.danaAddress}',
+        );
         return responseData.danaAddress!;
       }
     } else {
       // Server returned an error status
       Logger().e(
-          'Registration failed with HTTP ${response.statusCode} ${response.reasonPhrase ?? "Unknown"}');
+        'Registration failed with HTTP ${response.statusCode} ${response.reasonPhrase ?? "Unknown"}',
+      );
       Logger().e('Request URL: $baseUrl/register');
       Logger().e('Response body: ${response.body}');
 
-      // todo: throw custom error types based on status code
+      final typedError = challengeRegisterExceptionFor(
+        response.statusCode,
+        response.body,
+      );
+      if (typedError != null) {
+        throw typedError;
+      }
       throw Exception(response.body);
     }
   }
@@ -213,29 +349,33 @@ class NameServerRepository {
   /// Returns an empty list if no addresses are found
   /// Throws an exception for network errors, invalid responses, or malformed data
   Future<List<Bip353Address>> lookupDanaAddresses(
-      SilentPaymentCode code, String requestId) async {
+    SilentPaymentCode code,
+    String requestId,
+  ) async {
     final stringified = code.encode();
     Logger().d(
-        'Looking up dana addresses for SP address: ${stringified.substring(0, 20)}... (request ID: $requestId)');
+      'Looking up dana addresses for SP address: ${stringified.substring(0, 20)}... (request ID: $requestId)',
+    );
     final response = await http.Client().get(
-      Uri.parse('$baseUrl/lookup').replace(queryParameters: {
-        'sp_address': stringified,
-        'id': requestId,
-      }),
+      Uri.parse(
+        '$baseUrl/lookup',
+      ).replace(queryParameters: {'sp_address': stringified, 'id': requestId}),
     );
 
     Logger().d('Lookup response status: ${response.statusCode}');
     Logger().d('Lookup response body: ${response.body}');
 
     if (response.statusCode == 200 || response.statusCode == 201) {
-      final parsed =
-          NameServerLookupResponse.fromJson(jsonDecode(response.body));
+      final parsed = NameServerLookupResponse.fromJson(
+        jsonDecode(response.body),
+      );
       return parsed.danaAddresses;
     } else if (response.statusCode == 404) {
       // a 404 status code means that this sp address has no associated dana addresses
       // we still parse the response struct to avoid a generic 404 error
-      final parsed =
-          NameServerLookupResponse.fromJson(jsonDecode(response.body));
+      final parsed = NameServerLookupResponse.fromJson(
+        jsonDecode(response.body),
+      );
 
       if (parsed.danaAddresses.isEmpty) {
         return parsed.danaAddresses;
@@ -251,14 +391,16 @@ class NameServerRepository {
   }
 
   Future<PrefixSearchResponse> searchDanaAddressesWithPrefix(
-      String prefix, String requestId) async {
+    String prefix,
+    String requestId,
+  ) async {
     Logger().d(
-        'Searching for dana addresses with prefix: $prefix (request ID: $requestId)');
+      'Searching for dana addresses with prefix: $prefix (request ID: $requestId)',
+    );
     final response = await http.Client().get(
-      Uri.parse('$baseUrl/search').replace(queryParameters: {
-        'prefix': prefix,
-        'id': requestId,
-      }),
+      Uri.parse(
+        '$baseUrl/search',
+      ).replace(queryParameters: {'prefix': prefix, 'id': requestId}),
     );
 
     Logger().d('Prefix search response status: ${response.statusCode}');
@@ -270,11 +412,13 @@ class NameServerRepository {
         final responseData = PrefixSearchResponse.fromJson(decoded);
 
         Logger().i(
-            'Found ${responseData.count} dana address(es) matching prefix "$prefix" (total: ${responseData.totalCount})');
+          'Found ${responseData.count} dana address(es) matching prefix "$prefix" (total: ${responseData.totalCount})',
+        );
         return responseData;
       } catch (e, stackTrace) {
         Logger().e(
-            'Failed to parse prefix search response (${response.statusCode}): $e');
+          'Failed to parse prefix search response (${response.statusCode}): $e',
+        );
         Logger().e('Response body: ${response.body}');
         Logger().e('Stack trace: $stackTrace');
         throw FormatException('Failed to parse prefix search response: $e');
@@ -292,7 +436,8 @@ class NameServerRepository {
     } else {
       // Server returned an error status
       Logger().e(
-          'Prefix search failed with HTTP ${response.statusCode} ${response.reasonPhrase ?? "Unknown"}');
+        'Prefix search failed with HTTP ${response.statusCode} ${response.reasonPhrase ?? "Unknown"}',
+      );
       Logger().e('Request URL: $baseUrl/search');
       Logger().e('Response body: ${response.body}');
 
@@ -308,7 +453,8 @@ class NameServerRepository {
         } else {
           // Parsed but no message - create our own
           throw Exception(
-              'Prefix search failed: HTTP ${response.statusCode}: ${response.reasonPhrase ?? "Unknown error"}');
+            'Prefix search failed: HTTP ${response.statusCode}: ${response.reasonPhrase ?? "Unknown error"}',
+          );
         }
       } catch (parseError) {
         // Failed to parse error response
