@@ -61,7 +61,7 @@ impl SpWallet {
     pub fn sign_registration_challenge(&self, message: String) -> Result<String> {
         let sk = self.client.try_secret_spend_key()?;
         let sig = challenge::sign_challenge_inner(&sk, &message)?;
-        Ok(sig.serialize().iter().map(|b| format!("{b:02x}")).collect())
+        Ok(challenge::to_hex(&sig.serialize()))
     }
 }
 

@@ -19,7 +19,6 @@ import 'api/structs/silent_payment_code.dart';
 import 'api/structs/state_update.dart';
 import 'api/structs/unsigned_transaction.dart';
 import 'api/wallet.dart';
-import 'api/wallet/challenge.dart';
 import 'api/wallet/coin_selection.dart';
 import 'api/wallet/setup.dart';
 import 'dart:async';
@@ -313,9 +312,6 @@ abstract class RustLibApi extends BaseApi {
       {required List<OwnedOutput> ownedOutputs,
       required Recipient recipient,
       required double feerate});
-
-  String crateApiWalletChallengeSignChallenge(
-      {required String spendSecret, required String message});
 
   RustArcIncrementStrongCountFnType
       get rust_arc_increment_strong_count_ApiScanKey;
@@ -2323,32 +2319,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(
         debugName: "select_utxos_to_spend",
         argNames: ["ownedOutputs", "recipient", "feerate"],
-      );
-
-  @override
-  String crateApiWalletChallengeSignChallenge(
-      {required String spendSecret, required String message}) {
-    return handler.executeSync(SyncTask(
-      callFfi: () {
-        final serializer = SseSerializer(generalizedFrbRustBinding);
-        sse_encode_String(spendSecret, serializer);
-        sse_encode_String(message, serializer);
-        return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 70)!;
-      },
-      codec: SseCodec(
-        decodeSuccessData: sse_decode_String,
-        decodeErrorData: sse_decode_AnyhowException,
-      ),
-      constMeta: kCrateApiWalletChallengeSignChallengeConstMeta,
-      argValues: [spendSecret, message],
-      apiImpl: this,
-    ));
-  }
-
-  TaskConstMeta get kCrateApiWalletChallengeSignChallengeConstMeta =>
-      const TaskConstMeta(
-        debugName: "sign_challenge",
-        argNames: ["spendSecret", "message"],
       );
 
   RustArcIncrementStrongCountFnType

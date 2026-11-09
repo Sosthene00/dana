@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use flutter_rust_bridge::frb;
 use spdk_wallet::bitcoin::hashes::{sha256, Hash};
 use spdk_wallet::bitcoin::secp256k1::{self, Keypair, Message, SecretKey};
 use std::str::FromStr;
@@ -11,7 +10,7 @@ use std::str::FromStr;
 pub const CHALLENGE_PREFIX: &str = "dana-register:";
 
 /// Lowercase hex of a serialized byte array.
-fn to_hex(bytes: &[u8]) -> String {
+pub(crate) fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
 }
 
@@ -36,7 +35,6 @@ fn challenge_digest(message: &str) -> [u8; 32] {
 /// wallet.rs:46) is a JSON-encoded wallet handle passed by value through
 /// `encode`/`decode`, which does not fit a stateless string-in/string-out
 /// oracle call.
-#[frb(sync)]
 pub fn sign_challenge(spend_secret: &str, message: &str) -> Result<String> {
     let sk = SecretKey::from_str(spend_secret)?;
     Ok(to_hex(&sign_challenge_inner(&sk, message)?.serialize()))

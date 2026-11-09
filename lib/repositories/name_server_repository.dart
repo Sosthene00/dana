@@ -223,15 +223,18 @@ class NameServerRepository {
       Logger().e('Request URL: $baseUrl/challenge');
       Logger().e('Response body: ${response.body}');
 
-      final typedError = challengeRegisterExceptionFor(
-        response.statusCode,
-        response.body,
-      );
-      if (typedError != null) {
-        throw typedError;
-      }
-      throw Exception(response.body);
+      _throwNameServerError(response.statusCode, response.body);
     }
+  }
+
+  /// Throws the typed error matching a failed challenge/register HTTP
+  /// response, or a generic [Exception] when no typed error matches.
+  Never _throwNameServerError(int statusCode, String body) {
+    final typedError = challengeRegisterExceptionFor(statusCode, body);
+    if (typedError != null) {
+      throw typedError;
+    }
+    throw Exception(body);
   }
 
   /// Creates a dana address by calling the external name_server
@@ -330,14 +333,7 @@ class NameServerRepository {
       Logger().e('Request URL: $baseUrl/register');
       Logger().e('Response body: ${response.body}');
 
-      final typedError = challengeRegisterExceptionFor(
-        response.statusCode,
-        response.body,
-      );
-      if (typedError != null) {
-        throw typedError;
-      }
-      throw Exception(response.body);
+      _throwNameServerError(response.statusCode, response.body);
     }
   }
 
