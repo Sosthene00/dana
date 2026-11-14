@@ -4,11 +4,13 @@ import 'package:danawallet/generated/rust/api/stream.dart';
 import 'package:danawallet/generated/rust/api/structs/frigate_event.dart';
 import 'package:danawallet/generated/rust/api/wallet/frigate.dart'
     as frigate_api;
+import 'package:danawallet/repositories/frigate_disclosure_repository.dart';
 import 'package:danawallet/repositories/owned_outputs_repository.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
 import 'package:danawallet/repositories/wallet_repository.dart';
 import 'package:danawallet/services/frigate_confirmation_monitor.dart';
 import 'package:danawallet/services/frigate_event_handler.dart';
+import 'package:danawallet/services/frigate_warning_gate.dart';
 import 'package:danawallet/services/writer_lease.dart';
 import 'package:danawallet/states/frigate_state.dart';
 import 'package:logger/logger.dart';
@@ -47,6 +49,11 @@ class FrigateSubscriptionController {
   final FrigateConfirmationMonitor _monitor;
   final WriterLease? writerLease;
 
+  /// B5.2-B5.4: the public-warning gate deciding whether the subscription
+  /// may start (injectable for tests; defaults to the real repositories
+  /// and the B5.1 probe).
+  final FrigateWarningGate warningGate;
+
   /// Called after every processed event — the foreground-service wiring
   /// pings the main isolate so the UI re-reads the DB (B2.2).
   final void Function()? onEventProcessed;
@@ -58,6 +65,7 @@ class FrigateSubscriptionController {
     FrigateEventHandler? handler,
     FrigateConfirmationMonitor? confirmationMonitor,
     this.writerLease,
+    FrigateWarningGate? warningGate,
 
     /// Called when a candidate graduated into `owned_outputs` (B3.3) — the
     /// app refreshes the confirmed balance from the repository.
@@ -71,7 +79,8 @@ class FrigateSubscriptionController {
             FrigateConfirmationMonitor(
               onGraduated: onGraduated,
               writerLease: writerLease,
-            ) {
+            ),
+        warningGate = warningGate ?? FrigateWarningGate() {
     _handler = handler ??
         FrigateEventHandler(
           writerLease: writerLease,
@@ -112,6 +121,24 @@ class FrigateSubscriptionController {
         return false;
       }
 
+      // B5.2-B5.4: the one-time public warning gates the FIRST public
+      // sync. A private URL proceeds untouched (the gate probes nothing);
+      // a public unacked URL fires the blocking warning exactly once
+      // (B5.4) and holds the subscription until the user acknowledges
+      // (B5.3). An unreachable public URL never fires the warning (B5.4).
+      final decision = await warningGate.evaluate();
+      switch (decision) {
+        case FrigateGateDecision.proceed:
+          break;
+        case FrigateGateDecision.unreachable:
+          _frigateState.markUnreachable();
+          return false;
+        case FrigateGateDecision.warningRequired:
+        case FrigateGateDecision.warningHold:
+          _frigateState.setPublicWarningPending(true);
+          return false;
+      }
+
       // Single-writer handoff (B2.3/B2.8): acquire the writer lease BEFORE
       // any subscription state is touched. A live foreign writer (the
       // foreground service) keeps us read-only; a stale lease IS the
@@ -146,6 +173,13 @@ class FrigateSubscriptionController {
       await _frigateState.refresh();
       Logger().i(
           'frigate subscription started from checkpoint height $startHeight (B1.2)');
+
+      // B5.4: this was a successful subscription start with a public
+      // declaration — log the URL permanently in the per-wallet disclosure
+      // record (deduped per URL; the record survives the wallet).
+      if (await SettingsRepository.instance.isFrigatePublic()) {
+        await FrigateDisclosureRepository.instance.recordIfNew(hostUrl);
+      }
 
       // Phase 3 (B8.2 hard gate): the electrum confirmation path runs
       // whenever the frigate path runs. No-op unless an electrum endpoint is

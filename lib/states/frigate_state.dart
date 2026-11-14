@@ -40,9 +40,21 @@ class FrigateState extends ChangeNotifier {
   /// B4.4: whether the frigate backend is currently unreachable.
   bool backendUnreachable = false;
 
+  /// B5.3: whether the one-time public warning is pending acknowledgement —
+  /// while true, the first public sync is BLOCKED.
+  bool publicWarningPending = false;
+
   FrigateState({FrigateCandidatesRepository? candidatesRepository})
       : _candidatesRepository =
             candidatesRepository ?? FrigateCandidatesRepository.instance;
+
+  /// B5.3: set/clear the blocking public-warning pending flag.
+  void setPublicWarningPending(bool pending) {
+    if (publicWarningPending != pending) {
+      publicWarningPending = pending;
+      notifyListeners();
+    }
+  }
 
   /// Re-read the pending candidate set from the registry and notify listeners
   /// when the displayed value changed.
@@ -109,6 +121,7 @@ class FrigateState extends ChangeNotifier {
         'frigateBarVisible': catchUpBarVisible,
         'frigateBarProgress': catchUpProgress,
         'frigateUnreachable': backendUnreachable,
+        'frigateWarningPending': publicWarningPending,
       };
 
   /// Apply a snapshot produced by [snapshot] in another isolate.
@@ -116,6 +129,7 @@ class FrigateState extends ChangeNotifier {
     final visible = data['frigateBarVisible'];
     final progress = data['frigateBarProgress'];
     final unreachable = data['frigateUnreachable'];
+    final warningPending = data['frigateWarningPending'];
     var changed = false;
     if (visible is bool && visible != catchUpBarVisible) {
       catchUpBarVisible = visible;
@@ -127,6 +141,10 @@ class FrigateState extends ChangeNotifier {
     }
     if (unreachable is bool && unreachable != backendUnreachable) {
       backendUnreachable = unreachable;
+      changed = true;
+    }
+    if (warningPending is bool && warningPending != publicWarningPending) {
+      publicWarningPending = warningPending;
       changed = true;
     }
     if (changed) notifyListeners();
