@@ -1,6 +1,6 @@
 # Dana Wallet — Frigate Backend Behavior Specification
 
-**Status: DRAFT v0.2 (2026-11-13) — first deliverable of the spec-first restart (decision D13).
+**Status: v1.0 (2026-11-14) — RATIFIED. The five drafted open-item lines (B2.7, B2.8, B3.7, B3.8, B8.5) were ruled by the owner in chat on 2026-11-14 ('Yes to all'); former [DRAFT-OWNER-REVIEW] flags stripped. Earlier status: DRAFT v0.2 (2026-11-13) — first deliverable of the spec-first restart (decision D13).
 Normative basis: "Frigate Dana restart decision record (2026-11-13)" (Obsidian vault) and the
 2026-11-09 decision record it supersedes. Owner sign-off of this file is a HARD GATE: no
 implementation starts until Sosthene has approved it (decision D2). Owner corrections are
@@ -84,7 +84,7 @@ branch cut from `dev`.
   leg continues). Dropping the subscription at CaughtUp is a violation — it would break the
   mempool phase.
 
-- **B2.7** [DRAFT-OWNER-REVIEW] FFI split for service-side scanning (drafts §9-O3): the Rust
+- **B2.7** FFI split for service-side scanning (drafts §9-O3): the Rust
   side is exactly the fixed spdk scanner surface — wire protocol, subscription lifecycle, and
   `FrigateEvent` emission over the existing flutter_rust_bridge stream. No new Rust surface in
   v1: no DB access from Rust, no candidate/graduation logic in Rust. ALL `FrigateEvent`
@@ -93,7 +93,7 @@ branch cut from `dev`.
   monitor (§3), and the writer lease (B2.8). Rationale: the confirmed-state layer and the
   graduation path are Dart/sqflite; a single Dart writer keeps the B2.3 single-writer rule
   enforceable in one place.
-- **B2.8** [DRAFT-OWNER-REVIEW] Single-writer handoff probe (drafts §9-O4; precision of
+- **B2.8** Single-writer handoff probe (drafts §9-O4; precision of
   B2.3): writer exclusion is a DB **writer lease** — one lease row (writer identity +
   last-heartbeat timestamp) in the wallet state store. The live writer (the service, or the
   app after takeover) renews it every 5 s. A process may take over writing only after it
@@ -130,7 +130,7 @@ branch cut from `dev`.
   electrum-compatible API; self-hosted electrs as an advanced override). The electrum
   connection carries no scan key and reveals only outputs the frigate operator already saw.
 
-- **B3.7** [DRAFT-OWNER-REVIEW] Phase-3 scripthash subscribe strategy (drafts §9-O1;
+- **B3.7** Phase-3 scripthash subscribe strategy (drafts §9-O1;
   precision of B3.6): on candidate creation the monitor subscribes the electrum scripthash of
   that candidate's own output script (one subscription per candidate; each derived candidate
   output carries its own tweak key and therefore its own script, so per-candidate is the
@@ -142,7 +142,7 @@ branch cut from `dev`.
   `blockchain.scripthash.get_history` polling until a slot frees. The candidate table is the
   source of truth: on any electrum connect or reconnect the subscription set is rebuilt from
   `frigate_candidates WHERE status = 'pending'`, never from in-memory state.
-- **B3.8** [DRAFT-OWNER-REVIEW] Eviction detection (drafts §9-O2; precision of B3.5): the
+- **B3.8** Eviction detection (drafts §9-O2; precision of B3.5): the
   primary signal is the electrum negative read — on any subscribed scripthash status change,
   fetch `blockchain.scripthash.get_history`; a `pending` candidate whose txid appears in
   NEITHER the confirmed history NOR the mempool entries of its scripthash is evicted → status
@@ -226,7 +226,7 @@ branch cut from `dev`.
 - **B8.4** The one-time public warning fires on first successful public subscription and never
   again (regtest: two public URLs, two successful syncs, exactly one ack).
 
-- **B8.5** [DRAFT-OWNER-REVIEW] Regtest acceptance script outline (drafts §9-O5; the
+- **B8.5** Regtest acceptance script outline (drafts §9-O5; the
   execution contract for B8.1 and B8.3 on the rig of §0):
   1. Preflight: bitcoind RPC `getblockchaininfo` answers; electrs listens on :60401; frigate
      :50002 handshake — `server.version` sent FIRST, then `blockchain.headers.subscribe`.
@@ -254,32 +254,30 @@ branch cut from `dev`.
 
 ## 9. Open items (spec pass, blocking implementation)
 
-Drafted 2026-11-14 (R0a): every item below now has a normative draft line marked
-[DRAFT-OWNER-REVIEW] with a recommended default; the owner rules on the drafts via R0b and an
-owner ruling replaces the drafted line in full. No undrafted items remain; no item was left
-OPEN — where a parameter is a judgment call it is stated as a recommended default inside the
-draft line, which the [DRAFT-OWNER-REVIEW] flag holds for owner decision.
+RATIFIED 2026-11-14 (owner ruling via R0b, chat: "Yes to all" on the five drafts): every
+former open item below is now a ratified normative line (B2.7, B2.8, B3.7, B3.8, B8.5). No
+undrafted or unratified items remain; section 9 is retained as a ratification record.
 
 - **O1** Scripthash subscribe strategy for phase 3: which candidate scripthashes get
   subscribed, lookahead/gap limit, unsubscription on graduation/drop.
-  → Drafted as **B3.7** [DRAFT-OWNER-REVIEW]: per-candidate subscription, no address-gap
+  → Drafted as **B3.7**: per-candidate subscription, no address-gap
   lookahead, 1024-subscription cap with per-block polling fallback, unsubscribe on
   graduation/drop, table-driven rebuild on reconnect.
 - **O2** Candidate eviction-detection rule (electrum negative signal vs timeout).
-  → Drafted as **B3.8** [DRAFT-OWNER-REVIEW]: electrum negative read is primary,
+  → Drafted as **B3.8**: electrum negative read is primary,
   block/10-minute reconciliation is the fallback, never drop while the txid is present,
   reactivation on re-delivery, terminal otherwise.
 - **O3** FFI surface for service-side scanning: which FrigateEvent handling lives in Rust vs
   Dart inside the service context.
-  → Drafted as **B2.7** [DRAFT-OWNER-REVIEW]: Rust = fixed scanner surface only; all
+  → Drafted as **B2.7**: Rust = fixed scanner surface only; all
   state-touching handling in Dart inside the service.
 - **O4** Single-writer handoff probe: how the app process confirms the foreground service is
   down before taking over writes (B2.3).
-  → Drafted as **B2.8** [DRAFT-OWNER-REVIEW]: DB writer lease, 5 s heartbeat, takeover after
+  → Drafted as **B2.8**: DB writer lease, 5 s heartbeat, takeover after
   10 s staleness; bind probe as fast path only.
 - **O5** Regtest acceptance script for B8.1/B8.3 (frigate restart quirk handling, ~35 s
   block_height consistency budget).
-  → Drafted as **B8.5** [DRAFT-OWNER-REVIEW]: seven-step outline; the frigate-restart quirk
+  → Drafted as **B8.5**: seven-step outline; the frigate-restart quirk
   and the ~35 s block_height budget are normative inside it.
 
 ## 10. Out of scope (v1)
