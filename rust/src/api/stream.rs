@@ -1,3 +1,4 @@
+use crate::api::structs::frigate_event::FrigateEventDto;
 use crate::api::structs::state_update::StateUpdate;
 use crate::logger::{LogEntry, LogLevel};
 use crate::{frb_generated::StreamSink, stream};
@@ -21,4 +22,9 @@ pub fn create_sync_result_stream(s: StreamSink<StateUpdate>) {
 #[flutter_rust_bridge::frb(sync)]
 pub fn create_broadcast_stream(s: StreamSink<String>) {
     stream::create_tx_broadcast_stream(s);
+}
+
+#[flutter_rust_bridge::frb(sync)]
+pub fn create_frigate_event_stream(s: StreamSink<FrigateEventDto>) {
+    stream::create_frigate_event_stream(s);
 }
