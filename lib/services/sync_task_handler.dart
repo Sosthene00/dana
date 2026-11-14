@@ -3,7 +3,11 @@ import 'dart:async';
 import 'package:danawallet/constants.dart';
 import 'package:danawallet/generated/rust/frb_generated.dart';
 import 'package:danawallet/generated/rust/api/wallet.dart';
+import 'package:danawallet/repositories/settings_repository.dart';
+import 'package:danawallet/services/frigate_subscription_controller.dart';
 import 'package:danawallet/services/sync_engine.dart';
+import 'package:danawallet/services/writer_lease.dart';
+import 'package:danawallet/states/frigate_state.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:logger/logger.dart';
 
@@ -24,6 +28,7 @@ void startCallback() {
 class SynchronizationTaskHandler extends TaskHandler {
   Future<void>? _initFuture;
   SyncEngine? _engine;
+  FrigateSubscriptionController? _frigateWriter;
   int? _startHeight;
   int? _endHeight;
 
@@ -64,6 +69,11 @@ class SynchronizationTaskHandler extends TaskHandler {
           FlutterForegroundTask.sendDataToMain({bgKeyRefresh: lastSyncOnly}),
     );
     unawaited(_engine!.trySync());
+
+    // B2.1: the frigate subscription lives in this foreground service. The
+    // service isolate claims the writer lease (B2.8) and writes sync state
+    // directly to the DB (B2.2); it is the SOLE writer while alive (B2.3).
+    unawaited(_startFrigateWriter());
   }
 
   @override
@@ -80,6 +90,11 @@ class SynchronizationTaskHandler extends TaskHandler {
   @override
   Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {
     Logger().i('[BG] service destroyed (isTimeout: $isTimeout)');
+    // graceful release: the writer lease is cleared so the next writer (a
+    // restarted service, or the app after takeover) proceeds immediately
+    // (B2.8); an abrupt reclaim leaves it to go stale instead (B2.5).
+    await _frigateWriter?.stop();
+    _frigateWriter = null;
     if (_engine?.isSyncing == true) {
       SpWallet.interruptSync();
       if (!isTimeout) {
@@ -119,6 +134,45 @@ class SynchronizationTaskHandler extends TaskHandler {
   Future<void> _ensureInit() {
     _initFuture ??= RustLib.init();
     return _initFuture!;
+  }
+
+  /// B2.1/B2.2/B2.3: start the frigate subscription in this service isolate
+  /// under the service writer identity. No-op when no frigate URL is
+  /// configured. If the writer lease is held by a live foreign writer (the
+  /// app-isolate fallback writer), retry briefly, then wait for the next
+  /// service start (B2.5) rather than ever writing concurrently (B2.3).
+  Future<void> _startFrigateWriter() async {
+    try {
+      final frigateUrl = await SettingsRepository.instance.getFrigateUrl();
+      if (frigateUrl == null || frigateUrl.isEmpty) return;
+
+      final controller = FrigateSubscriptionController(
+        frigateState: FrigateState(),
+        writerLease: WriterLease(writerId: WriterLease.serviceWriterId),
+        // graduation moved satoshis into owned_outputs — the app refreshes
+        // the confirmed balance from the repository.
+        onGraduated: () =>
+            FlutterForegroundTask.sendDataToMain({bgKeyRefresh: true}),
+        // every processed event may have changed the candidate registry —
+        // the app re-reads it from the DB (B2.2).
+        onEventProcessed: () =>
+            FlutterForegroundTask.sendDataToMain({bgKeyFrigateRefresh: true}),
+      );
+      _frigateWriter = controller;
+
+      for (var attempt = 0; attempt < 12; attempt++) {
+        if (await controller.start()) {
+          Logger().i('[BG] frigate subscription started in the foreground '
+              'service (B2.1) — sole sync-state writer (B2.3)');
+          return;
+        }
+        await Future<void>.delayed(const Duration(seconds: 5));
+      }
+      Logger().w('[BG] frigate writer lease still held after 60 s — '
+          'subscription not started in the service (B2.3 read-only)');
+    } catch (e) {
+      Logger().e('[BG] frigate service writer failed to start: $e');
+    }
   }
 
   Future<void> _onReceiveSyncRequest() async {

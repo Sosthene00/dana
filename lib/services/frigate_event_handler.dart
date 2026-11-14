@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:danawallet/generated/rust/api/structs/frigate_event.dart';
 import 'package:danawallet/generated/rust/api/structs/owned_output.dart';
 import 'package:danawallet/repositories/frigate_candidates_repository.dart';
+import 'package:danawallet/services/writer_lease.dart';
 import 'package:logger/logger.dart';
 
 /// Dart-side consumer of the frigate event stream for the mempool leg
@@ -31,11 +32,18 @@ class FrigateEventHandler {
   /// test seam: deterministic clock for `first_seen`.
   final int Function()? nowMillis;
 
+  /// The single-writer guard (B2.8): when set, the sync-state writes below
+  /// go through [WriterLease.ensureOwnership] so a live foreign writer can
+  /// never record candidates concurrently (B2.3). Null only in unit tests
+  /// without a writer.
+  final WriterLease? writerLease;
+
   FrigateEventHandler({
     FrigateCandidatesRepository? candidatesRepository,
     this.onChanged,
     this.onCandidatesRecorded,
     this.nowMillis,
+    this.writerLease,
   }) : _candidatesRepository =
             candidatesRepository ?? FrigateCandidatesRepository.instance;
 
@@ -55,6 +63,9 @@ class FrigateEventHandler {
 
   Future<void> _recordCandidates(
       String eventTxid, List<OwnedOutput> outputs) async {
+    // B2.8: the lease check sits inside the sync-state write path — a live
+    // foreign writer must never see this registry written concurrently.
+    await writerLease?.ensureOwnership();
     final firstSeen =
         nowMillis?.call() ?? DateTime.now().millisecondsSinceEpoch;
     for (final output in outputs) {
