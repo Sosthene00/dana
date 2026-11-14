@@ -13,6 +13,7 @@ import 'api/stream.dart';
 import 'api/structs/amount.dart';
 import 'api/structs/bip321_uri.dart';
 import 'api/structs/discovered_output.dart';
+import 'api/structs/frigate_event.dart';
 import 'api/structs/input_selection.dart';
 import 'api/structs/network.dart';
 import 'api/structs/outpoint.dart';
@@ -23,6 +24,7 @@ import 'api/structs/state_update.dart';
 import 'api/structs/unsigned_transaction.dart';
 import 'api/wallet.dart';
 import 'api/wallet/coin_selection.dart';
+import 'api/wallet/frigate.dart';
 import 'api/wallet/setup.dart';
 import 'dart:async';
 import 'dart:convert';
@@ -222,6 +224,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   RustStreamSink<String> dco_decode_StreamSink_String_Sse(dynamic raw);
 
   @protected
+  RustStreamSink<FrigateEventDto> dco_decode_StreamSink_frigate_event_dto_Sse(
+      dynamic raw);
+
+  @protected
   RustStreamSink<LogEntry> dco_decode_StreamSink_log_entry_Sse(dynamic raw);
 
   @protected
@@ -268,6 +274,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   double dco_decode_f_32(dynamic raw);
 
   @protected
+  FrigateEventDto dco_decode_frigate_event_dto(dynamic raw);
+
+  @protected
   int dco_decode_i_32(dynamic raw);
 
   @protected
@@ -291,6 +300,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<OwnedOutput> dco_decode_list_owned_output(dynamic raw);
+
+  @protected
+  Uint32List dco_decode_list_prim_u_32_strict(dynamic raw);
 
   @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
@@ -322,6 +334,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   CoinSelectionStrategy? dco_decode_opt_box_autoadd_coin_selection_strategy(
       dynamic raw);
+
+  @protected
+  Uint32List? dco_decode_opt_list_prim_u_32_strict(dynamic raw);
 
   @protected
   U8Array32? dco_decode_opt_u_8_array_32(dynamic raw);
@@ -517,6 +532,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       SseDeserializer deserializer);
 
   @protected
+  RustStreamSink<FrigateEventDto> sse_decode_StreamSink_frigate_event_dto_Sse(
+      SseDeserializer deserializer);
+
+  @protected
   RustStreamSink<LogEntry> sse_decode_StreamSink_log_entry_Sse(
       SseDeserializer deserializer);
 
@@ -567,6 +586,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   double sse_decode_f_32(SseDeserializer deserializer);
 
   @protected
+  FrigateEventDto sse_decode_frigate_event_dto(SseDeserializer deserializer);
+
+  @protected
   int sse_decode_i_32(SseDeserializer deserializer);
 
   @protected
@@ -590,6 +612,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<OwnedOutput> sse_decode_list_owned_output(SseDeserializer deserializer);
+
+  @protected
+  Uint32List sse_decode_list_prim_u_32_strict(SseDeserializer deserializer);
 
   @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
@@ -621,6 +646,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   CoinSelectionStrategy? sse_decode_opt_box_autoadd_coin_selection_strategy(
+      SseDeserializer deserializer);
+
+  @protected
+  Uint32List? sse_decode_opt_list_prim_u_32_strict(
       SseDeserializer deserializer);
 
   @protected
@@ -819,6 +848,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       RustStreamSink<String> self, SseSerializer serializer);
 
   @protected
+  void sse_encode_StreamSink_frigate_event_dto_Sse(
+      RustStreamSink<FrigateEventDto> self, SseSerializer serializer);
+
+  @protected
   void sse_encode_StreamSink_log_entry_Sse(
       RustStreamSink<LogEntry> self, SseSerializer serializer);
 
@@ -870,6 +903,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_f_32(double self, SseSerializer serializer);
 
   @protected
+  void sse_encode_frigate_event_dto(
+      FrigateEventDto self, SseSerializer serializer);
+
+  @protected
   void sse_encode_i_32(int self, SseSerializer serializer);
 
   @protected
@@ -894,6 +931,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_owned_output(
       List<OwnedOutput> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_prim_u_32_strict(
+      Uint32List self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_prim_u_8_strict(
@@ -927,6 +968,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_coin_selection_strategy(
       CoinSelectionStrategy? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_list_prim_u_32_strict(
+      Uint32List? self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_u_8_array_32(U8Array32? self, SseSerializer serializer);
