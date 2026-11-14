@@ -7,6 +7,8 @@ import 'package:danawallet/generated/rust/api/structs/owned_output.dart';
 import 'package:danawallet/generated/rust/api/structs/outpoint.dart';
 import 'package:danawallet/generated/rust/lib.dart';
 import 'package:danawallet/repositories/frigate_candidates_repository.dart';
+import 'package:danawallet/repositories/owned_outputs_repository.dart';
+import 'package:danawallet/repositories/transactions_repository.dart';
 import 'package:danawallet/services/frigate_event_handler.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -59,16 +61,21 @@ void main() {
     final repo = FrigateCandidatesRepository.instance;
     late FrigateEventHandler handler;
     late int changeCount;
+    late int confirmedCount;
 
     setUp(() async {
       db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
       await db.execute('PRAGMA foreign_keys = ON');
       await applyMigrations(db);
       FrigateCandidatesRepository.testDatabaseOverride = () async => db;
+      OwnedOutputsRepository.testDatabaseOverride = () async => db;
+      TransactionsRepository.testDatabaseOverride = () async => db;
       changeCount = 0;
+      confirmedCount = 0;
       handler = FrigateEventHandler(
         candidatesRepository: repo,
         onChanged: () => changeCount++,
+        onConfirmed: () => confirmedCount++,
         // deterministic first_seen for assertions
         nowMillis: () => 1700000000000,
       );
@@ -76,11 +83,12 @@ void main() {
 
     tearDown(() async {
       FrigateCandidatesRepository.testDatabaseOverride = null;
+      OwnedOutputsRepository.testDatabaseOverride = null;
+      TransactionsRepository.testDatabaseOverride = null;
       await db.close();
     });
 
-    test('B3.1: an Unconfirmed event creates pending candidate rows',
-        () async {
+    test('B3.1: an Unconfirmed event creates pending candidate rows', () async {
       await handler.handleEvent(unconfirmedEvent(
         txid: _txidA,
         outputs: [
@@ -89,8 +97,7 @@ void main() {
         ],
       ));
 
-      final rows = await db.query('frigate_candidates',
-          orderBy: 'vout');
+      final rows = await db.query('frigate_candidates', orderBy: 'vout');
       expect(rows, hasLength(2));
       final first = await repo.getCandidate(_txidA, 0);
       expect(first, isNotNull);
@@ -122,30 +129,107 @@ void main() {
       await handler.handleEvent(unconfirmedEvent(outputs: snapshot));
 
       final rows = await db.query('frigate_candidates');
-      expect(rows, hasLength(2), reason: 'one row per outpoint, not per delivery');
+      expect(rows, hasLength(2),
+          reason: 'one row per outpoint, not per delivery');
       expect(await repo.getPendingBalance(), 5500,
           reason: 'balance counted exactly once (B3.4)');
     });
 
-    test('phase-2 scope: non-Unconfirmed events create no candidate rows',
+    test(
+        'R3 scope: lifecycle events (Tip/CaughtUp/Disconnected/Spent) touch no state',
         () async {
       await handler
           .handleEvent(const FrigateEventDto.tip(height: 100, hash: 'ab'));
       await handler.handleEvent(const FrigateEventDto.caughtUp());
-      await handler.handleEvent(const FrigateEventDto.disconnected(
-          reason: 'connection reset'));
-      await handler.handleEvent(FrigateEventDto.confirmed(
-          blkheight: 101,
-          blkhash: 'ab',
-          foundOutputs: [ownedOutput(txid: _txidA, vout: 0)]));
+      await handler.handleEvent(
+          const FrigateEventDto.disconnected(reason: 'connection reset'));
       await handler.handleEvent(const FrigateEventDto.spent(outpoints: [
         OutPoint(txid: _txidA, vout: 0),
       ]));
 
       final rows = await db.query('frigate_candidates');
-      expect(rows, isEmpty,
-          reason: 'graduation/confirmation is phase 3 (R5); not this handler');
+      expect(rows, isEmpty);
+      final owned = await db.query('owned_outputs');
+      expect(owned, isEmpty);
       expect(changeCount, 0);
+      expect(confirmedCount, 0);
+    });
+
+    test('R3: a Confirmed history event writes the receipt into owned_outputs',
+        () async {
+      await handler.handleEvent(FrigateEventDto.confirmed(
+          blkheight: 900,
+          blkhash: 'ab',
+          foundOutputs: [ownedOutput(txid: _txidA, vout: 0, amountSat: 1500)]));
+
+      final owned = await db.query('owned_outputs');
+      expect(owned, hasLength(1));
+      expect(owned.first['txid'], _txidA);
+      expect(owned.first['vout'], 0);
+      expect(owned.first['amount_sat'], 1500);
+      expect(owned.first['tweak'], Uint8List.fromList(List.filled(32, 7)));
+      expect(owned.first['script'], Uint8List.fromList([0x51, 0x20]));
+      // the existing confirmed-state path also records the incoming
+      // transaction (same as the blindbit sync engine)
+      final tx = await db
+          .query('transactions', where: 'txid = ?', whereArgs: [_txidA]);
+      expect(tx, hasLength(1));
+      expect(tx.first['confirmation_height'], 900);
+      expect(tx.first['confirmation_blockhash'], 'ab');
+      expect(confirmedCount, 1,
+          reason: 'the confirmed balance refreshes from the repository');
+      expect(changeCount, 1, reason: 'the registry/UI state refreshes');
+    });
+
+    test(
+        'B3.4: a re-delivered Confirmed event (history replay / re-subscribe) counts exactly once',
+        () async {
+      FrigateEventDto event() => FrigateEventDto.confirmed(
+          blkheight: 900,
+          blkhash: 'ab',
+          foundOutputs: [ownedOutput(txid: _txidA, vout: 0, amountSat: 1500)]);
+
+      // first subscription replays the history leg...
+      await handler.handleEvent(event());
+      // ...a re-subscribe re-delivers the SAME confirmed output...
+      await handler.handleEvent(event());
+      // ...and the supervisor retry after another reconnect does too.
+      await handler.handleEvent(event());
+
+      final owned = await db.query('owned_outputs');
+      expect(owned, hasLength(1),
+          reason: 'one row per outpoint, not per delivery (B3.4)');
+      final balance = await OwnedOutputsRepository.instance.getUnspentBalance();
+      expect(balance.field0, BigInt.from(1500),
+          reason: 'balance counted exactly once (B3.4)');
+    });
+
+    test(
+        'R3: a Confirmed event whose outpoint is a pending candidate marks the candidate confirmed',
+        () async {
+      // the payment was seen in the mempool first (phase-2 leg)...
+      await handler.handleEvent(unconfirmedEvent(txid: _txidA, outputs: [
+        ownedOutput(txid: _txidA, vout: 0, amountSat: 1500),
+      ]));
+      expect(await repo.getPendingBalance(), 1500);
+
+      // ...then the scanner reports it confirmed (mempool entry got mined).
+      await handler.handleEvent(FrigateEventDto.confirmed(
+          blkheight: 900,
+          blkhash: 'ab',
+          foundOutputs: [ownedOutput(txid: _txidA, vout: 0, amountSat: 1500)]));
+
+      final row = await repo.getCandidate(_txidA, 0);
+      expect(row, isNotNull);
+      expect(row!.status, FrigateCandidateStatus.confirmed,
+          reason:
+              'the outpoint is confirmed state — it must not also sit in the unconfirmed line (B3.4/B4.1)');
+      // repo returns the SUM (0 when no pending rows remain); the null
+      // absent-line mapping (B4.1) lives in FrigateState.refresh
+      expect(await repo.getPendingBalance(), 0);
+      final owned = await db.query('owned_outputs');
+      expect(owned, hasLength(1));
+      expect(confirmedCount, 1);
     });
   });
 }
