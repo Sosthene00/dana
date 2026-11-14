@@ -63,6 +63,11 @@ void main() async {
   final frigateState = FrigateState();
   final frigateController = FrigateSubscriptionController(
     frigateState: frigateState,
+    // phase 3 (B3.3): a graduation moved satoshis into owned_outputs —
+    // refresh the confirmed balance from the repository.
+    onGraduated: () {
+      unawaited(walletState.refreshAfterSync());
+    },
   );
 
   final syncOrchestrator = SyncOrchestrator(
