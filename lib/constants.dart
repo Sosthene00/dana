@@ -59,6 +59,11 @@ const String bgKeyRefresh = 'refresh';
 const String bgKeyInterrupt = 'interrupt';
 const String bgKeyFatalError = 'fatalError';
 
+/// The foreground service processed a frigate event and wrote sync state —
+/// the app re-reads the registry/balance from the DB (B2.2: the app READS
+/// existing state, it does not rescan).
+const String bgKeyFrigateRefresh = 'frigateRefresh';
+
 // Message keys sent to the background sync service from the main isolate.
 const String bgKeySync = 'sync';
 
