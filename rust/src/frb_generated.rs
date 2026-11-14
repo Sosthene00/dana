@@ -45,7 +45,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -698085042;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1645077882;
 
 // Section: executor
 
@@ -2153,6 +2153,75 @@ fn wire__crate__api__wallet__SpWallet_sign_transaction_impl(
         },
     )
 }
+fn wire__crate__api__wallet__SpWallet_start_frigate_subscription_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "SpWallet_start_frigate_subscription",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SpWallet>,
+            >>::sse_decode(&mut deserializer);
+            let api_host_url = <String>::sse_decode(&mut deserializer);
+            let api_start_height = <u32>::sse_decode(&mut deserializer);
+            let api_owned_outputs =
+                <Vec<crate::api::structs::owned_output::OwnedOutput>>::sse_decode(
+                    &mut deserializer,
+                );
+            let api_labels = <Option<Vec<u32>>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || async move {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_that_guard =
+                                        Some(api_that.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_that_guard = api_that_guard.unwrap();
+                        let output_ok = crate::api::wallet::SpWallet::start_frigate_subscription(
+                            &*api_that_guard,
+                            api_host_url,
+                            api_start_height,
+                            api_owned_outputs,
+                            api_labels,
+                        )
+                        .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__wallet__SpWallet_sync_to_height_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -2648,6 +2717,41 @@ fn wire__crate__api__stream__create_broadcast_stream_impl(
         },
     )
 }
+fn wire__crate__api__stream__create_frigate_event_stream_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "create_frigate_event_stream",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_s = <StreamSink<
+                crate::api::structs::frigate_event::FrigateEventDto,
+                flutter_rust_bridge::for_generated::SseCodec,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let output_ok = Ok::<_, ()>({
+                    crate::api::stream::create_frigate_event_stream(api_s);
+                })?;
+                std::result::Result::Ok(output_ok)
+            })())
+        },
+    )
+}
 fn wire__crate__api__stream__create_log_stream_impl(
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
@@ -2854,6 +2958,40 @@ fn wire__crate__api__simple__init_app_impl(
         },
     )
 }
+fn wire__crate__api__wallet__frigate__is_frigate_subscription_running_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "is_frigate_subscription_running",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let output_ok = Ok::<_, ()>(
+                        crate::api::wallet::frigate::is_frigate_subscription_running(),
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__api__bip321__parse_payment_uri_impl(
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
@@ -3012,6 +3150,40 @@ fn wire__crate__api__wallet__coin_selection__select_utxos_to_spend_impl(
                         std::result::Result::Ok(output_ok)
                     })(),
                 )
+            }
+        },
+    )
+}
+fn wire__crate__api__wallet__frigate__stop_frigate_subscription_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "stop_frigate_subscription",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let output_ok = Ok::<_, ()>({
+                        crate::api::wallet::frigate::stop_frigate_subscription();
+                    })?;
+                    std::result::Result::Ok(output_ok)
+                })())
             }
         },
     )
@@ -3258,6 +3430,19 @@ impl SseDecode for StreamSink<String, flutter_rust_bridge::for_generated::SseCod
 }
 
 impl SseDecode
+    for StreamSink<
+        crate::api::structs::frigate_event::FrigateEventDto,
+        flutter_rust_bridge::for_generated::SseCodec,
+    >
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <String>::sse_decode(deserializer);
+        return StreamSink::deserialize(inner);
+    }
+}
+
+impl SseDecode
     for StreamSink<crate::logger::LogEntry, flutter_rust_bridge::for_generated::SseCodec>
 {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -3369,6 +3554,62 @@ impl SseDecode for f32 {
     }
 }
 
+impl SseDecode for crate::api::structs::frigate_event::FrigateEventDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut tag_ = <i32>::sse_decode(deserializer);
+        match tag_ {
+            0 => {
+                let mut var_height = <u32>::sse_decode(deserializer);
+                let mut var_hash = <String>::sse_decode(deserializer);
+                return crate::api::structs::frigate_event::FrigateEventDto::Tip {
+                    height: var_height,
+                    hash: var_hash,
+                };
+            }
+            1 => {
+                let mut var_blkheight = <u32>::sse_decode(deserializer);
+                let mut var_blkhash = <String>::sse_decode(deserializer);
+                let mut var_foundOutputs =
+                    <Vec<crate::api::structs::owned_output::OwnedOutput>>::sse_decode(deserializer);
+                return crate::api::structs::frigate_event::FrigateEventDto::Confirmed {
+                    blkheight: var_blkheight,
+                    blkhash: var_blkhash,
+                    found_outputs: var_foundOutputs,
+                };
+            }
+            2 => {
+                let mut var_txid = <String>::sse_decode(deserializer);
+                let mut var_outputs =
+                    <Vec<crate::api::structs::owned_output::OwnedOutput>>::sse_decode(deserializer);
+                return crate::api::structs::frigate_event::FrigateEventDto::Unconfirmed {
+                    txid: var_txid,
+                    outputs: var_outputs,
+                };
+            }
+            3 => {
+                return crate::api::structs::frigate_event::FrigateEventDto::CaughtUp;
+            }
+            4 => {
+                let mut var_outpoints =
+                    <Vec<crate::api::structs::outpoint::OutPoint>>::sse_decode(deserializer);
+                return crate::api::structs::frigate_event::FrigateEventDto::Spent {
+                    outpoints: var_outpoints,
+                };
+            }
+            5 => {
+                let mut var_reason = <String>::sse_decode(deserializer);
+                return crate::api::structs::frigate_event::FrigateEventDto::Disconnected {
+                    reason: var_reason,
+                };
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
 impl SseDecode for i32 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -3440,6 +3681,18 @@ impl SseDecode for Vec<crate::api::structs::owned_output::OwnedOutput> {
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(<crate::api::structs::owned_output::OwnedOutput>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<u32> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<u32>::sse_decode(deserializer));
         }
         return ans_;
     }
@@ -3567,6 +3820,17 @@ impl SseDecode for Option<crate::api::structs::input_selection::CoinSelectionStr
                     deserializer,
                 ),
             );
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<Vec<u32>> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<Vec<u32>>::sse_decode(deserializer));
         } else {
             return None;
         }
@@ -3764,28 +4028,46 @@ fn pde_ffi_dispatcher_primary_impl(
             rust_vec_len,
             data_len,
         ),
-        49 => wire__crate__api__wallet__SpWallet_sync_to_height_impl(
+        49 => wire__crate__api__wallet__SpWallet_start_frigate_subscription_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        56 => wire__crate__api__structs__amount__amount_default_impl(
+        50 => wire__crate__api__wallet__SpWallet_sync_to_height_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        58 => wire__crate__api__chain__check_network_impl(port, ptr, rust_vec_len, data_len),
-        63 => wire__crate__api__chain__get_chain_height_impl(port, ptr, rust_vec_len, data_len),
-        65 => wire__crate__api__simple__init_app_impl(port, ptr, rust_vec_len, data_len),
-        67 => wire__crate__api__wallet__coin_selection__select_utxos_to_drain_impl(
+        57 => wire__crate__api__structs__amount__amount_default_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        68 => wire__crate__api__wallet__coin_selection__select_utxos_to_spend_impl(
+        59 => wire__crate__api__chain__check_network_impl(port, ptr, rust_vec_len, data_len),
+        65 => wire__crate__api__chain__get_chain_height_impl(port, ptr, rust_vec_len, data_len),
+        67 => wire__crate__api__simple__init_app_impl(port, ptr, rust_vec_len, data_len),
+        68 => wire__crate__api__wallet__frigate__is_frigate_subscription_running_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        70 => wire__crate__api__wallet__coin_selection__select_utxos_to_drain_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        71 => wire__crate__api__wallet__coin_selection__select_utxos_to_spend_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        72 => wire__crate__api__wallet__frigate__stop_frigate_subscription_impl(
             port,
             ptr,
             rust_vec_len,
@@ -3849,19 +4131,20 @@ fn pde_ffi_dispatcher_sync_impl(
 46 => wire__crate__api__wallet__SpWallet_new_impl(ptr, rust_vec_len, data_len),
 47 => wire__crate__api__wallet__SpWallet_setup_wallet_impl(ptr, rust_vec_len, data_len),
 48 => wire__crate__api__wallet__SpWallet_sign_transaction_impl(ptr, rust_vec_len, data_len),
-50 => wire__crate__api__wallet__setup__WalletSetupResult_auto_accessor_get_mnemonic_impl(ptr, rust_vec_len, data_len),
-51 => wire__crate__api__wallet__setup__WalletSetupResult_auto_accessor_get_scan_key_impl(ptr, rust_vec_len, data_len),
-52 => wire__crate__api__wallet__setup__WalletSetupResult_auto_accessor_get_spend_key_impl(ptr, rust_vec_len, data_len),
-53 => wire__crate__api__wallet__setup__WalletSetupResult_auto_accessor_set_mnemonic_impl(ptr, rust_vec_len, data_len),
-54 => wire__crate__api__wallet__setup__WalletSetupResult_auto_accessor_set_scan_key_impl(ptr, rust_vec_len, data_len),
-55 => wire__crate__api__wallet__setup__WalletSetupResult_auto_accessor_set_spend_key_impl(ptr, rust_vec_len, data_len),
-57 => wire__crate__api__structs__amount__amount_zero_impl(ptr, rust_vec_len, data_len),
-59 => wire__crate__api__stream__create_broadcast_stream_impl(ptr, rust_vec_len, data_len),
-60 => wire__crate__api__stream__create_log_stream_impl(ptr, rust_vec_len, data_len),
-61 => wire__crate__api__stream__create_sync_progress_stream_impl(ptr, rust_vec_len, data_len),
-62 => wire__crate__api__stream__create_sync_result_stream_impl(ptr, rust_vec_len, data_len),
-64 => wire__crate__api__bip39__get_english_wordlist_impl(ptr, rust_vec_len, data_len),
-66 => wire__crate__api__bip321__parse_payment_uri_impl(ptr, rust_vec_len, data_len),
+51 => wire__crate__api__wallet__setup__WalletSetupResult_auto_accessor_get_mnemonic_impl(ptr, rust_vec_len, data_len),
+52 => wire__crate__api__wallet__setup__WalletSetupResult_auto_accessor_get_scan_key_impl(ptr, rust_vec_len, data_len),
+53 => wire__crate__api__wallet__setup__WalletSetupResult_auto_accessor_get_spend_key_impl(ptr, rust_vec_len, data_len),
+54 => wire__crate__api__wallet__setup__WalletSetupResult_auto_accessor_set_mnemonic_impl(ptr, rust_vec_len, data_len),
+55 => wire__crate__api__wallet__setup__WalletSetupResult_auto_accessor_set_scan_key_impl(ptr, rust_vec_len, data_len),
+56 => wire__crate__api__wallet__setup__WalletSetupResult_auto_accessor_set_spend_key_impl(ptr, rust_vec_len, data_len),
+58 => wire__crate__api__structs__amount__amount_zero_impl(ptr, rust_vec_len, data_len),
+60 => wire__crate__api__stream__create_broadcast_stream_impl(ptr, rust_vec_len, data_len),
+61 => wire__crate__api__stream__create_frigate_event_stream_impl(ptr, rust_vec_len, data_len),
+62 => wire__crate__api__stream__create_log_stream_impl(ptr, rust_vec_len, data_len),
+63 => wire__crate__api__stream__create_sync_progress_stream_impl(ptr, rust_vec_len, data_len),
+64 => wire__crate__api__stream__create_sync_result_stream_impl(ptr, rust_vec_len, data_len),
+66 => wire__crate__api__bip39__get_english_wordlist_impl(ptr, rust_vec_len, data_len),
+69 => wire__crate__api__bip321__parse_payment_uri_impl(ptr, rust_vec_len, data_len),
                         _ => unreachable!(),
                     }
 }
@@ -4093,6 +4376,59 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::structs::discovered_output::D
     for crate::api::structs::discovered_output::DiscoveredOutput
 {
     fn into_into_dart(self) -> crate::api::structs::discovered_output::DiscoveredOutput {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::structs::frigate_event::FrigateEventDto {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            crate::api::structs::frigate_event::FrigateEventDto::Tip { height, hash } => [
+                0.into_dart(),
+                height.into_into_dart().into_dart(),
+                hash.into_into_dart().into_dart(),
+            ]
+            .into_dart(),
+            crate::api::structs::frigate_event::FrigateEventDto::Confirmed {
+                blkheight,
+                blkhash,
+                found_outputs,
+            } => [
+                1.into_dart(),
+                blkheight.into_into_dart().into_dart(),
+                blkhash.into_into_dart().into_dart(),
+                found_outputs.into_into_dart().into_dart(),
+            ]
+            .into_dart(),
+            crate::api::structs::frigate_event::FrigateEventDto::Unconfirmed { txid, outputs } => [
+                2.into_dart(),
+                txid.into_into_dart().into_dart(),
+                outputs.into_into_dart().into_dart(),
+            ]
+            .into_dart(),
+            crate::api::structs::frigate_event::FrigateEventDto::CaughtUp => {
+                [3.into_dart()].into_dart()
+            }
+            crate::api::structs::frigate_event::FrigateEventDto::Spent { outpoints } => {
+                [4.into_dart(), outpoints.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::structs::frigate_event::FrigateEventDto::Disconnected { reason } => {
+                [5.into_dart(), reason.into_into_dart().into_dart()].into_dart()
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::structs::frigate_event::FrigateEventDto
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::structs::frigate_event::FrigateEventDto>
+    for crate::api::structs::frigate_event::FrigateEventDto
+{
+    fn into_into_dart(self) -> crate::api::structs::frigate_event::FrigateEventDto {
         self
     }
 }
@@ -4502,6 +4838,18 @@ impl SseEncode for StreamSink<String, flutter_rust_bridge::for_generated::SseCod
 }
 
 impl SseEncode
+    for StreamSink<
+        crate::api::structs::frigate_event::FrigateEventDto,
+        flutter_rust_bridge::for_generated::SseCodec,
+    >
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        unimplemented!("")
+    }
+}
+
+impl SseEncode
     for StreamSink<crate::logger::LogEntry, flutter_rust_bridge::for_generated::SseCodec>
 {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -4597,6 +4945,53 @@ impl SseEncode for f32 {
     }
 }
 
+impl SseEncode for crate::api::structs::frigate_event::FrigateEventDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        match self {
+            crate::api::structs::frigate_event::FrigateEventDto::Tip { height, hash } => {
+                <i32>::sse_encode(0, serializer);
+                <u32>::sse_encode(height, serializer);
+                <String>::sse_encode(hash, serializer);
+            }
+            crate::api::structs::frigate_event::FrigateEventDto::Confirmed {
+                blkheight,
+                blkhash,
+                found_outputs,
+            } => {
+                <i32>::sse_encode(1, serializer);
+                <u32>::sse_encode(blkheight, serializer);
+                <String>::sse_encode(blkhash, serializer);
+                <Vec<crate::api::structs::owned_output::OwnedOutput>>::sse_encode(
+                    found_outputs,
+                    serializer,
+                );
+            }
+            crate::api::structs::frigate_event::FrigateEventDto::Unconfirmed { txid, outputs } => {
+                <i32>::sse_encode(2, serializer);
+                <String>::sse_encode(txid, serializer);
+                <Vec<crate::api::structs::owned_output::OwnedOutput>>::sse_encode(
+                    outputs, serializer,
+                );
+            }
+            crate::api::structs::frigate_event::FrigateEventDto::CaughtUp => {
+                <i32>::sse_encode(3, serializer);
+            }
+            crate::api::structs::frigate_event::FrigateEventDto::Spent { outpoints } => {
+                <i32>::sse_encode(4, serializer);
+                <Vec<crate::api::structs::outpoint::OutPoint>>::sse_encode(outpoints, serializer);
+            }
+            crate::api::structs::frigate_event::FrigateEventDto::Disconnected { reason } => {
+                <i32>::sse_encode(5, serializer);
+                <String>::sse_encode(reason, serializer);
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
 impl SseEncode for i32 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -4657,6 +5052,16 @@ impl SseEncode for Vec<crate::api::structs::owned_output::OwnedOutput> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <crate::api::structs::owned_output::OwnedOutput>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<u32> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <u32>::sse_encode(item, serializer);
         }
     }
 }
@@ -4775,6 +5180,16 @@ impl SseEncode for Option<crate::api::structs::input_selection::CoinSelectionStr
             <crate::api::structs::input_selection::CoinSelectionStrategy>::sse_encode(
                 value, serializer,
             );
+        }
+    }
+}
+
+impl SseEncode for Option<Vec<u32>> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <Vec<u32>>::sse_encode(value, serializer);
         }
     }
 }
