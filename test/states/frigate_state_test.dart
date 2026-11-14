@@ -230,4 +230,41 @@ void main() {
       expect(state.backendUnreachable, isTrue);
     });
   });
+
+  group('FrigateState public warning pending (B5.3)', () {
+    late FrigateState state;
+
+    setUp(() {
+      state = FrigateState();
+    });
+
+    test('no warning pending by default', () {
+      expect(state.publicWarningPending, isFalse);
+    });
+
+    test('pending warning shows the blocking dialog state, then clears', () {
+      var notified = 0;
+      state.addListener(() => notified++);
+
+      state.setPublicWarningPending(true);
+      expect(state.publicWarningPending, isTrue);
+      expect(notified, 1, reason: 'the UI must react to the pending warning');
+
+      state.setPublicWarningPending(true); // idempotent — no extra notify
+      expect(notified, 1);
+
+      state.setPublicWarningPending(false);
+      expect(state.publicWarningPending, isFalse);
+      expect(notified, 2);
+    });
+
+    test('snapshot round-trips the pending-warning flag across isolates', () {
+      state.setPublicWarningPending(true);
+
+      final restored = FrigateState()..applySnapshot(state.snapshot());
+      expect(restored.publicWarningPending, isTrue,
+          reason: 'the subscription lives in the service isolate; the '
+              'blocking warning shows in the app (B2.2/B5.3)');
+    });
+  });
 }

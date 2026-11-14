@@ -1,6 +1,7 @@
 import 'package:bitcoin_ui/bitcoin_ui.dart';
 import 'package:danawallet/global_functions.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
+import 'package:danawallet/screens/settings/network/frigate_backend_screen.dart';
 import 'package:danawallet/screens/settings/widgets/settings_list_tile.dart';
 import 'package:danawallet/widgets/skeletons/screen_skeleton.dart';
 import 'package:danawallet/states/chain_state.dart';
@@ -21,6 +22,12 @@ class NetworkSettingsScreen extends StatelessWidget {
         subtitle: 'Configure blindbit server endpoint',
         onTap: () => _onSetBlindbitUrl(context),
       ),
+      _NetworkSettingsItem(
+        icon: Icons.lan_outlined,
+        title: 'Frigate backend',
+        subtitle: 'Configure the sync backend and declare it public or private',
+        onTap: () => _onFrigateBackend(context),
+      ),
       if (isDevEnv)
         _NetworkSettingsItem(
           icon: Icons.schedule,
@@ -36,6 +43,12 @@ class NetworkSettingsScreen extends StatelessWidget {
           onTap: () => _onSetDustLimit(context),
         ),
     ];
+  }
+
+  void _onFrigateBackend(BuildContext context) {
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => const FrigateBackendScreen(),
+    ));
   }
 
   Future<void> _onSetLastSync(BuildContext context) async {

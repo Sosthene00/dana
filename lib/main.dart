@@ -8,6 +8,7 @@ import 'package:danawallet/generated/rust/frb_generated.dart';
 import 'package:danawallet/global_functions.dart';
 import 'package:danawallet/services/foreground_sync_service.dart';
 import 'package:danawallet/services/frigate_subscription_controller.dart';
+import 'package:danawallet/widgets/wallet/frigate_public_warning.dart';
 import 'package:danawallet/repositories/database_helper.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
 import 'package:danawallet/screens/home/home.dart';
@@ -156,6 +157,9 @@ void main() async {
         ChangeNotifierProvider.value(value: walletState),
         ChangeNotifierProvider.value(value: syncProgress),
         ChangeNotifierProvider.value(value: frigateState),
+        // plain provider: the B5.3 warning dialog restarts the gated
+        // frigate leg after the user acknowledges
+        Provider.value(value: frigateController),
         ChangeNotifierProvider.value(value: chainState),
         ChangeNotifierProvider.value(value: HomeState()),
         ChangeNotifierProvider.value(value: permissionState),
@@ -189,7 +193,7 @@ class SilentPaymentApp extends StatelessWidget {
             // SatoshiSymbol provides the sat glyph (U+E006) via PUA fallback
             fontFamilyFallback: const [satFontFamily],
           ),
-          home: landingPage);
+          home: FrigatePublicWarningWatcher(child: landingPage));
     });
   }
 }

@@ -4,7 +4,14 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 const String _keyBlindbitUrl = "blindbiturl";
 const String _keyFrigateUrl = "frigateurl";
+const String _keyFrigatePublic = "frigatepublic";
 const String _keyFrigateElectrumUrl = "frigateelectrumurl";
+
+/// B5.3/B5.4: the per-wallet one-time public-warning ack key. Cleared with
+/// the wallet (resetAll) so a NEW wallet gets its own warning; the
+/// disclosure log (in FrigateDisclosureRepository) is permanent and never
+/// cleared.
+const String keyFrigateWarningAcked = "frigatewarningacked";
 const String _keyDustLimit = "dustlimit";
 const String _keyFiatCurrency = "fiatcurrency";
 const String _keyBlockExplorerUrl = "blockexplorerurl";
@@ -26,6 +33,9 @@ class SettingsRepository {
       _keyFiatCurrency,
       _keyBlockExplorerUrl,
       _keyAmountDisplayUnit,
+      // B5.4: the one-time warning is PER WALLET — a new wallet is warned
+      // again. The disclosure record is permanent and never cleared here.
+      keyFrigateWarningAcked,
     });
   }
 
@@ -53,6 +63,20 @@ class SettingsRepository {
   /// the declaration/probe UI is R7 per B5.1). Null = frigate not configured.
   Future<String?> getFrigateUrl() async {
     return await prefs.getString(_keyFrigateUrl);
+  }
+
+  Future<void> setFrigatePublic(bool? isPublic) async {
+    if (isPublic == null) {
+      return await prefs.remove(_keyFrigatePublic);
+    } else {
+      return await prefs.setBool(_keyFrigatePublic, isPublic);
+    }
+  }
+
+  /// B5.2: per-URL public/private declaration. Null/unset = PRIVATE —
+  /// public is always opt-in, never a default or a promotion.
+  Future<bool> isFrigatePublic() async {
+    return await prefs.getBool(_keyFrigatePublic) ?? false;
   }
 
   Future<void> setFrigateElectrumUrl(String? url) async {
