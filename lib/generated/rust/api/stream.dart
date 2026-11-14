@@ -8,6 +8,7 @@ import '../lib.dart';
 import '../logger.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'structs/amount.dart';
+import 'structs/frigate_event.dart';
 import 'structs/outpoint.dart';
 import 'structs/owned_output.dart';
 import 'structs/state_update.dart';
@@ -25,3 +26,6 @@ Stream<StateUpdate> createSyncResultStream() =>
 
 Stream<String> createBroadcastStream() =>
     RustLib.instance.api.crateApiStreamCreateBroadcastStream();
+
+Stream<FrigateEventDto> createFrigateEventStream() =>
+    RustLib.instance.api.crateApiStreamCreateFrigateEventStream();

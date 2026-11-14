@@ -84,6 +84,17 @@ abstract class SpWallet implements RustOpaqueInterface {
   String signTransaction(
       {required SilentPaymentUnsignedTransaction unsignedTransaction});
 
+  /// Start the held frigate subscription from the wallet's committed
+  /// checkpoint (B1.2). Idempotent: a wake on a wallet whose subscription is
+  /// alive does nothing observable (B1.3). The supervisor holds the
+  /// subscription across `CaughtUp` (B2.6) and re-subscribes with the same
+  /// checkpoint on any disconnect (B2.4).
+  Future<void> startFrigateSubscription(
+      {required String hostUrl,
+      required int startHeight,
+      required List<OwnedOutput> ownedOutputs,
+      Uint32List? labels});
+
   Future<void> syncToHeight(
       {required int fromHeight,
       required int toHeight,
