@@ -24,12 +24,17 @@ class FrigateEventHandler {
   /// can refresh (unconfirmed balance line, B4.1).
   final void Function()? onChanged;
 
+  /// Called after new candidates were recorded, so the phase-3 confirmation
+  /// monitor can subscribe their scripthashes (B3.7).
+  final void Function()? onCandidatesRecorded;
+
   /// test seam: deterministic clock for `first_seen`.
   final int Function()? nowMillis;
 
   FrigateEventHandler({
     FrigateCandidatesRepository? candidatesRepository,
     this.onChanged,
+    this.onCandidatesRecorded,
     this.nowMillis,
   }) : _candidatesRepository =
             candidatesRepository ?? FrigateCandidatesRepository.instance;
@@ -68,6 +73,9 @@ class FrigateEventHandler {
       Logger().i(
           'frigate mempool leg: ${outputs.length} candidate(s) recorded for tx $eventTxid (B3.1)');
       onChanged?.call();
+      // Phase 3 (B3.7): the confirmation monitor subscribes the new
+      // candidates' scripthashes.
+      onCandidatesRecorded?.call();
     }
   }
 }

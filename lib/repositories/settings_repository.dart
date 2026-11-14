@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 const String _keyBlindbitUrl = "blindbiturl";
 const String _keyFrigateUrl = "frigateurl";
+const String _keyFrigateElectrumUrl = "frigateelectrumurl";
 const String _keyDustLimit = "dustlimit";
 const String _keyFiatCurrency = "fiatcurrency";
 const String _keyBlockExplorerUrl = "blockexplorerurl";
@@ -52,6 +53,23 @@ class SettingsRepository {
   /// the declaration/probe UI is R7 per B5.1). Null = frigate not configured.
   Future<String?> getFrigateUrl() async {
     return await prefs.getString(_keyFrigateUrl);
+  }
+
+  Future<void> setFrigateElectrumUrl(String? url) async {
+    if (url == null) {
+      return await prefs.remove(_keyFrigateElectrumUrl);
+    } else {
+      return await prefs.setString(_keyFrigateElectrumUrl, url);
+    }
+  }
+
+  /// Electrum-compatible API endpoint (host:port) for the phase-3
+  /// confirmation tracking (B3.6): the wallet's configured blindbit
+  /// electrum-compatible API, with a self-hosted electrs as the advanced
+  /// override value. Declaration UI is R7 (same pattern as frigateurl).
+  /// Null = phase 3 not configured.
+  Future<String?> getFrigateElectrumUrl() async {
+    return await prefs.getString(_keyFrigateElectrumUrl);
   }
 
   Future<void> setBlockExplorerUrl(String? url) async {
