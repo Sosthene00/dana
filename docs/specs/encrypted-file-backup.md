@@ -1,6 +1,6 @@
 # Dana Wallet — Encrypted File Backup (Format v1)
 
-- **Status:** Draft spec for review. Derived from the locked decision record D1–D12 (grill, 2026-11-12/13).
+- **Status:** Ratified v1.0 (2026-11-14, founder sign-off). Derived from the locked decision record D1–D12 (grill, 2026-11-12/13).
 - **Target codebase:** `cygnet3/dana` at commit `6ee42226ed19aacba44767c5e4d7009b2b611ed9` (tip of `upstream/bip392`).
 - **Normative language:** The key words MUST, MUST NOT, SHOULD, and MAY are to be interpreted as described in RFC 2119.
 - **Scope:** v1 only, except §8 (Escrow v2), which is a forward-compatibility summary. Nothing in this document commits v1 to escrow functionality.
@@ -331,6 +331,6 @@ Each vector MUST state: Argon2id params, salt, nonce, the exact AES/XChaCha sele
 These are unresolved and MUST NOT be presented as decided anywhere in implementation or docs:
 
 - **(a) ~~Cipher final ruling~~ RESOLVED (2026-11-13).** Founder ruled: XChaCha20-Poly1305 via the RustCrypto `chacha20poly1305` crate. AES-256-GCM retained as reader-side-only `cipher_id = 0x02`. See §3.4 for the decision text, the NCC Group audit basis, and the `cargo audit` pre-merge requirement.
-- **(b) Argon2id low-end verification (narrowed 2026-11-13).** Published baselines (RFC 9106 second recommended profile, OWASP minimum, Bitwarden defaults, Android Go RAM floors) indicate m = 64 MiB t = 3 p = 1 clears all non-Go Android devices and 1 GB Go devices; only 512 MB-era Go devices are marginal (analysis in §6.3.1). Remaining work is a single verification run on an Android Go emulator (`isLowRamDevice=true`): confirm one-shot 64 MiB allocation succeeds with acceptable latency, and exercise the §6.3.2 fallback path once. No further measurement needed to freeze defaults.
+- **(b) ~~Argon2id low-end verification~~ CLOSED as default-adopted (2026-11-14).** Founder ruled: ship with the default **m = 64 MiB, t = 3, p = 1** (RFC 9106 second recommended profile). Published baselines (§6.3.1) indicate it clears all non-Go Android devices and 1 GB Go devices; only 512 MB-era Go devices are marginal, and the §6.3.2 encrypt-side fallback covers those without a format change. The Android Go emulator verification run remains a non-blocking follow-up (staged per skill `devops/android-emulator-aarch64-host`); if it ever contradicts the baselines, the header-serialized KDF params allow re-tuning without breaking v1 files.
 - **(c) ~~Exact combiner `f(s_i, password)` for v2~~ RESOLVED (2026-11-13).** Founder ruled: two-pass Argon2id cascade — password pass nested inside the escrow pass (`key_material = Argon2id(s_i || H(k_pass), salt_2, …)`), full definition normative in §4.1.1. XOR construction rejected. v1 unaffected; the v1 header reservation remains sufficient.
 - **(d) ~~Full-state restore promise wording~~ RESOLVED (2026-11-13).** Normative paragraph added in §7.2: file restore = funds + addresses + scan state + history + labels (+ contacts/settings if the optional section is present), no rescan; seed restore = funds and addresses only. UI copy must keep the asymmetry visible.
