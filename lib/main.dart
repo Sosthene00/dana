@@ -7,6 +7,7 @@ import 'package:danawallet/generated/rust/frb_generated.dart';
 
 import 'package:danawallet/global_functions.dart';
 import 'package:danawallet/services/foreground_sync_service.dart';
+import 'package:danawallet/services/frigate_subscription_controller.dart';
 import 'package:danawallet/repositories/database_helper.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
 import 'package:danawallet/screens/home/home.dart';
@@ -18,6 +19,7 @@ import 'package:danawallet/states/chain_state.dart';
 import 'package:danawallet/states/contacts_state.dart';
 import 'package:danawallet/states/display_preferences_state.dart';
 import 'package:danawallet/states/fiat_exchange_rate_state.dart';
+import 'package:danawallet/states/frigate_state.dart';
 import 'package:danawallet/states/home_state.dart';
 import 'package:danawallet/states/permission_state.dart';
 import 'package:danawallet/services/sync_orchestrator.dart';
@@ -58,6 +60,10 @@ void main() async {
   final contactsState = ContactsState();
   final displayPreferencesState = await DisplayPreferencesState.create();
   final fiatExchangeRate = FiatExchangeRateState();
+  final frigateState = FrigateState();
+  final frigateController = FrigateSubscriptionController(
+    frigateState: frigateState,
+  );
 
   final syncOrchestrator = SyncOrchestrator(
     chainState: chainState,
@@ -98,6 +104,12 @@ void main() async {
 
     syncOrchestrator.start();
 
+    // frigate mempool leg (phase 2): hold the subscription and write
+    // candidates from Unconfirmed events; no-op unless a frigate URL is
+    // configured. Foreground-service relocation is R6 (B2.1).
+    frigateState.refresh();
+    frigateController.start();
+
     if (addressRegistrationNeeded) {
       landingPage = const RegisterDanaAddressScreen();
     } else {
@@ -117,6 +129,7 @@ void main() async {
         // providers for mutable data
         ChangeNotifierProvider.value(value: walletState),
         ChangeNotifierProvider.value(value: syncProgress),
+        ChangeNotifierProvider.value(value: frigateState),
         ChangeNotifierProvider.value(value: chainState),
         ChangeNotifierProvider.value(value: HomeState()),
         ChangeNotifierProvider.value(value: permissionState),
