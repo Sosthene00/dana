@@ -19,6 +19,7 @@ import 'package:danawallet/generated/rust/api/wallet/coin_selection.dart';
 import 'package:danawallet/generated/rust/api/wallet/setup.dart';
 import 'package:danawallet/repositories/mempool_api_repository.dart';
 import 'package:danawallet/repositories/owned_outputs_repository.dart';
+import 'package:danawallet/repositories/frigate_candidates_repository.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
 import 'package:danawallet/repositories/transactions_repository.dart';
 import 'package:danawallet/repositories/wallet_repository.dart';
@@ -102,6 +103,9 @@ class WalletState extends ChangeNotifier {
     await transactionsRepository.reset();
     // this is redudant, but we do it to be sure
     await ownedOutputsRepository.reset();
+    // stale frigate candidates must never leak into the next wallet as an
+    // unconfirmed balance (B3.1 registry is per-wallet)
+    await FrigateCandidatesRepository.instance.reset();
     await walletRepository.reset();
   }
 

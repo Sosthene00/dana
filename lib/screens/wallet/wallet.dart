@@ -9,6 +9,7 @@ import 'package:danawallet/generated/rust/api/structs/amount.dart';
 import 'package:danawallet/data/models/recorded_transaction.dart';
 import 'package:danawallet/global_functions.dart';
 import 'package:danawallet/widgets/sheets/app_bottom_sheet_shell.dart';
+import 'package:danawallet/widgets/wallet/unconfirmed_balance_line.dart';
 import 'package:danawallet/widgets/sheets/sheet_handle_bar.dart';
 import 'package:danawallet/widgets/sheets/show_app_bottom_sheet.dart';
 import 'package:danawallet/screens/spend/choose_recipient.dart';
@@ -17,6 +18,7 @@ import 'package:danawallet/states/chain_state.dart';
 import 'package:danawallet/states/contacts_state.dart';
 import 'package:danawallet/states/display_preferences_state.dart';
 import 'package:danawallet/states/fiat_exchange_rate_state.dart';
+import 'package:danawallet/states/frigate_state.dart';
 import 'package:danawallet/states/sync_progress_state.dart';
 import 'package:danawallet/states/wallet_state.dart';
 import 'package:danawallet/widgets/alerts/inline_warning_banner.dart';
@@ -629,6 +631,7 @@ class WalletScreenState extends State<WalletScreen> {
     final syncProgress = Provider.of<SyncProgressState>(context);
     final chainState = Provider.of<ChainState>(context);
     final displayPreference = Provider.of<DisplayPreferencesState>(context);
+    final frigateState = Provider.of<FrigateState>(context);
     final danaAddress = walletState.danaAddress;
 
     Amount amount = walletState.amount + walletState.unconfirmedChange;
@@ -670,6 +673,13 @@ class WalletScreenState extends State<WalletScreen> {
                 const SizedBox(height: 20.0),
                 buildAmountDisplay(amount, exchangeRate,
                     displayPreference.amountDisplayUnit, displayPreference),
+                // frigate unconfirmed balance (B4.1): absent when there are
+                // no pending candidates; informational only (B4.2/B6.1).
+                UnconfirmedBalanceLine(
+                  pendingBalanceSat: frigateState.pendingBalanceSat,
+                  unit: displayPreference.amountDisplayUnit,
+                  hideAmount: hideAmount,
+                ),
                 const SizedBox(height: 20.0),
                 // Show Dana address banner if available
                 if (danaAddress != null) buildDanaAddressBanner(danaAddress),
