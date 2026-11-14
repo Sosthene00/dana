@@ -82,6 +82,10 @@ class FrigateSubscriptionController {
             // Phase 3 (B3.7): subscribe the new candidates' scripthashes.
             unawaited(_monitor.registerCandidates());
           },
+          // R3: history-leg receipts also land in `owned_outputs` — the
+          // confirmed balance refreshes through the same channel as a
+          // phase-3 graduation.
+          onConfirmed: onGraduated,
         );
   }
 
@@ -126,6 +130,9 @@ class FrigateSubscriptionController {
 
       // Single owner of the frigate event stream (one sink on the Rust side).
       _events = createFrigateEventStream().listen((event) async {
+        // B4.3/B4.4: the catch-up bar and the unreachable banner track the
+        // subscription lifecycle (Tip/Confirmed/CaughtUp/Disconnected).
+        _frigateState.applyLifecycle(event);
         await _handler.handleEvent(event);
         await _frigateState.refresh();
         onEventProcessed?.call();
@@ -147,6 +154,10 @@ class FrigateSubscriptionController {
       return true;
     } catch (e) {
       Logger().e('frigate subscription failed to start: $e');
+      // B4.4: a failed start means the backend (or its connection) is
+      // unreachable — the banner shows and clears on the next successful
+      // interaction.
+      _frigateState.markUnreachable();
       await _events?.cancel();
       _events = null;
       // never wedge the lease on a failed start (B2.8)

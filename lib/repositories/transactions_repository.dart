@@ -5,6 +5,7 @@ import 'package:danawallet/generated/rust/api/structs/amount.dart';
 import 'package:danawallet/generated/rust/api/structs/outpoint.dart';
 import 'package:danawallet/generated/rust/api/structs/recipient.dart';
 import 'package:danawallet/repositories/database_helper.dart';
+import 'package:flutter/foundation.dart';
 import 'package:logger/logger.dart';
 import 'package:sqflite/sqflite.dart';
 
@@ -15,7 +16,19 @@ class TransactionsRepository {
   // singleton
   static final instance = TransactionsRepository._();
 
-  Future<Database> get _db async => await DatabaseHelper.instance.database;
+  /// test seam: when set, unit tests source the database from here instead of
+  /// the DatabaseHelper singleton (which needs the asset bundle). Mirrors the
+  /// seam on OwnedOutputsRepository/FrigateCandidatesRepository.
+  @visibleForTesting
+  static Future<Database> Function()? testDatabaseOverride;
+
+  Future<Database> get _db async {
+    final override = testDatabaseOverride;
+    if (override != null) {
+      return override();
+    }
+    return DatabaseHelper.instance.database;
+  }
 
   Future<void> reset() async {
     final db = await _db;

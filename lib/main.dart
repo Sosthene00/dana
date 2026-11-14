@@ -125,9 +125,12 @@ void main() async {
     unawaited(startFrigateAppSide(frigateController));
     if (Platform.isAndroid) {
       // the service wrote sync state — re-read the registry/balance from the
-      // DB instead of rescanning (B2.2)
+      // DB instead of rescanning (B2.2), and apply the subscription
+      // lifecycle snapshot it shipped (catch-up bar / unreachable banner,
+      // B4.3/B4.4 — the subscription lives in the service isolate)
       FlutterForegroundTask.addTaskDataCallback((data) {
         if (data is Map && data[bgKeyFrigateRefresh] == true) {
+          frigateState.applySnapshot(Map<String, Object?>.from(data));
           unawaited(frigateState.refresh());
         }
       });
