@@ -15,6 +15,7 @@ import 'package:danawallet/screens/onboarding/introduction.dart';
 import 'package:danawallet/screens/onboarding/register_dana_address.dart';
 import 'package:danawallet/services/app_info_service.dart';
 import 'package:danawallet/services/logging_service.dart';
+import 'package:danawallet/services/writer_lease.dart';
 import 'package:danawallet/states/chain_state.dart';
 import 'package:danawallet/states/contacts_state.dart';
 import 'package:danawallet/states/display_preferences_state.dart';
@@ -26,6 +27,7 @@ import 'package:danawallet/services/sync_orchestrator.dart';
 import 'package:danawallet/states/sync_progress_state.dart';
 import 'package:danawallet/states/wallet_state.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_svg/svg.dart';
 import 'package:logger/logger.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -63,6 +65,10 @@ void main() async {
   final frigateState = FrigateState();
   final frigateController = FrigateSubscriptionController(
     frigateState: frigateState,
+    // B2.3/B2.8: the app isolate is only the FALLBACK writer — it takes
+    // over from the foreground service exclusively through the writer lease
+    // (stale >= 10 s = service confirmed down).
+    writerLease: WriterLease(writerId: WriterLease.appWriterId),
     // phase 3 (B3.3): a graduation moved satoshis into owned_outputs —
     // refresh the confirmed balance from the repository.
     onGraduated: () {
@@ -109,11 +115,23 @@ void main() async {
 
     syncOrchestrator.start();
 
-    // frigate mempool leg (phase 2): hold the subscription and write
-    // candidates from Unconfirmed events; no-op unless a frigate URL is
-    // configured. Foreground-service relocation is R6 (B2.1).
+    // Frigate leg (B2.1): the subscription lives in the foreground service —
+    // the service isolate claims the writer lease and writes sync state
+    // directly to the DB (B2.2). The app refreshes its UI state from the
+    // repositories and takes over writing only when the service is confirmed
+    // down (B2.3/B2.8). On Linux there is no foreground service, so the app
+    // isolate is the writer.
     frigateState.refresh();
-    frigateController.start();
+    unawaited(startFrigateAppSide(frigateController));
+    if (Platform.isAndroid) {
+      // the service wrote sync state — re-read the registry/balance from the
+      // DB instead of rescanning (B2.2)
+      FlutterForegroundTask.addTaskDataCallback((data) {
+        if (data is Map && data[bgKeyFrigateRefresh] == true) {
+          unawaited(frigateState.refresh());
+        }
+      });
+    }
 
     if (addressRegistrationNeeded) {
       landingPage = const RegisterDanaAddressScreen();
@@ -170,6 +188,31 @@ class SilentPaymentApp extends StatelessWidget {
           ),
           home: landingPage);
     });
+  }
+}
+
+/// App-side frigate writer handoff (B2.3/B2.8): on Android, give the
+/// foreground-service isolate a head start to claim the writer lease; if a
+/// fresh service claim appears, the app stays read-only (B2.1/B2.2). If the
+/// lease stays unclaimed/stale past the grace window, the service is
+/// confirmed down and the app takes over writing in-process. On Linux there
+/// is no foreground service — the app isolate is the writer.
+Future<void> startFrigateAppSide(
+    FrigateSubscriptionController controller) async {
+  if (Platform.isAndroid) {
+    final serviceWriterLive = await waitForServiceWriterClaim();
+    if (serviceWriterLive) {
+      Logger().i('frigate: foreground service holds the writer lease — '
+          'app stays read-only (B2.1/B2.3)');
+      return;
+    }
+    Logger().i('frigate: no live service writer after the grace window — '
+        'app takes over writing (B2.3/B2.8)');
+  }
+  try {
+    await controller.start();
+  } catch (e) {
+    Logger().e('frigate app-side writer failed to start: $e');
   }
 }
 

@@ -9,6 +9,7 @@ import 'package:danawallet/repositories/frigate_candidates_repository.dart';
 import 'package:danawallet/repositories/owned_outputs_repository.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
 import 'package:danawallet/services/electrum_client.dart';
+import 'package:danawallet/services/writer_lease.dart';
 import 'package:flutter/foundation.dart';
 import 'package:logger/logger.dart';
 
@@ -79,6 +80,12 @@ class FrigateConfirmationMonitor {
   /// test seam: deterministic clock for the B3.8 staleness check.
   final int Function()? nowMillis;
 
+  /// The single-writer guard (B2.8): when set, the graduation/eviction
+  /// writes below go through [WriterLease.ensureOwnership] so a live foreign
+  /// writer can never mutate `owned_outputs`/`frigate_candidates`
+  /// concurrently (B2.3). Null only in unit tests without a writer.
+  final WriterLease? writerLease;
+
   ElectrumClient? _client;
   StreamSubscription<ElectrumNotification>? _notificationSub;
   Timer? _reconnectTimer;
@@ -101,6 +108,7 @@ class FrigateConfirmationMonitor {
     this.onGraduated,
     this.reconnectDelay = const Duration(seconds: 5),
     this.nowMillis,
+    this.writerLease,
   })  : _candidatesRepository =
             candidatesRepository ?? FrigateCandidatesRepository.instance,
         _ownedOutputsRepository =
@@ -339,6 +347,8 @@ class FrigateConfirmationMonitor {
   /// dedupes on the outpoint, B3.4), and the candidate row is marked
   /// `confirmed`. Electrum confirmation alone is the graduation condition.
   Future<void> _graduate(FrigateCandidate candidate) async {
+    // B2.8: the lease check sits inside the sync-state write path.
+    await writerLease?.ensureOwnership();
     await _ownedOutputsRepository.insertOutput(
       output: OwnedOutput(
         outpoint: OutPoint(txid: candidate.txid, vout: candidate.vout),
@@ -363,6 +373,8 @@ class FrigateConfirmationMonitor {
   /// leaves no trace in balance; a re-delivered mempool entry re-pends the
   /// row via the phase-2 upsert path.
   Future<void> _drop(FrigateCandidate candidate) async {
+    // B2.8: the lease check sits inside the sync-state write path.
+    await writerLease?.ensureOwnership();
     await _candidatesRepository.markDropped(candidate.txid, candidate.vout);
     final scripthash = electrumScripthash(Uint8List.fromList(candidate.script));
     await _client?.unsubscribeScripthash(scripthash);
