@@ -1,11 +1,10 @@
-import 'dart:typed_data';
-
 import 'package:danawallet/extensions/api_amount.dart';
 import 'package:danawallet/generated/rust/api/structs/amount.dart';
 import 'package:danawallet/generated/rust/api/structs/outpoint.dart';
 import 'package:danawallet/generated/rust/api/structs/owned_output.dart';
 import 'package:danawallet/generated/rust/lib.dart';
 import 'package:danawallet/repositories/database_helper.dart';
+import 'package:flutter/foundation.dart';
 import 'package:logger/logger.dart';
 import 'package:sqflite/sqflite.dart';
 
@@ -16,7 +15,18 @@ class OwnedOutputsRepository {
   // singleton
   static final instance = OwnedOutputsRepository._();
 
-  Future<Database> get _db async => await DatabaseHelper.instance.database;
+  /// test seam: when set, unit tests source the database from here instead of
+  /// the DatabaseHelper singleton (which needs the asset bundle).
+  @visibleForTesting
+  static Future<Database> Function()? testDatabaseOverride;
+
+  Future<Database> get _db async {
+    final override = testDatabaseOverride;
+    if (override != null) {
+      return override();
+    }
+    return DatabaseHelper.instance.database;
+  }
 
   /// reset all owned outputs
   /// note: this function is redundant in most cases, since resetting the transactions with cascade delete the owned outputs
