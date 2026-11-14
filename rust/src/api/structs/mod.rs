@@ -1,6 +1,7 @@
 pub mod amount;
 pub mod bip321_uri;
 pub mod discovered_output;
+pub mod frigate_event;
 pub mod input_selection;
 pub mod network;
 pub mod outpoint;
