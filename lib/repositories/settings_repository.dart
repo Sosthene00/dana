@@ -3,6 +3,7 @@ import 'package:danawallet/data/enums/fiat_currency.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 const String _keyBlindbitUrl = "blindbiturl";
+const String _keyFrigateUrl = "frigateurl";
 const String _keyDustLimit = "dustlimit";
 const String _keyFiatCurrency = "fiatcurrency";
 const String _keyBlockExplorerUrl = "blockexplorerurl";
@@ -37,6 +38,20 @@ class SettingsRepository {
 
   Future<String?> getBlindbitUrl() async {
     return await prefs.getString(_keyBlindbitUrl);
+  }
+
+  Future<void> setFrigateUrl(String? url) async {
+    if (url == null) {
+      return await prefs.remove(_keyFrigateUrl);
+    } else {
+      return await prefs.setString(_keyFrigateUrl, url);
+    }
+  }
+
+  /// Frigate backend host:port for the frigate sync path (phase 2 plumbing;
+  /// the declaration/probe UI is R7 per B5.1). Null = frigate not configured.
+  Future<String?> getFrigateUrl() async {
+    return await prefs.getString(_keyFrigateUrl);
   }
 
   Future<void> setBlockExplorerUrl(String? url) async {
