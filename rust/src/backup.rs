@@ -246,7 +246,11 @@ impl Header {
 /// Key derivation, spec §4: Argon2id (params from the header, never
 /// hardcoded) over the UTF-8 password with no trimming, then HKDF-SHA256 with
 /// the versioned salt and purpose string.
-fn derive_aead_key(
+///
+/// Public so the §9 test vectors can state the derived AEAD key ("so
+/// implementers can debug KDF drift independently of AEAD issues") and so the
+/// checked-in vectors can be verified key-by-key, not only end to end.
+pub fn derive_aead_key(
     password: &[u8],
     salt: &[u8],
     argon2_m_kib: u32,
@@ -378,6 +382,53 @@ pub fn encrypt_with(
     )?;
     let ciphertext_with_tag = aead_seal(cipher_id, &key, &nonce, payload, &header)?;
 
+    let mut file = header;
+    file.extend_from_slice(&ciphertext_with_tag);
+    Ok(file)
+}
+
+/// Deterministic encrypt: identical to [`encrypt_with`], but the salt and
+/// nonce are supplied by the caller instead of drawn from the OS entropy
+/// source.
+///
+/// Exists for spec §9 test-vector generation: vectors MUST be byte-reproducible
+/// from the reference implementation, which requires pinning the otherwise
+/// random salt/nonce. Not for production use — production callers MUST use
+/// [`encrypt`] / [`encrypt_with`], which generate fresh randomness per file.
+#[allow(clippy::too_many_arguments)]
+pub fn encrypt_deterministic(
+    cipher_id: u8,
+    argon2_m_kib: u32,
+    argon2_t: u32,
+    argon2_p: u32,
+    salt: &[u8; 16],
+    nonce: &[u8; 24],
+    payload: &[u8],
+    password: &str,
+) -> Result<Vec<u8>, BackupError> {
+    let nonce_len = match cipher_id {
+        CIPHER_XCHACHA20_POLY1305 => 24usize,
+        CIPHER_AES_256_GCM => 12usize,
+        other => return Err(BackupError::UnsupportedCipherId(other)),
+    };
+    let header = Header::write(
+        cipher_id,
+        argon2_m_kib,
+        argon2_t,
+        argon2_p,
+        salt,
+        nonce,
+        nonce_len,
+        payload.len() as u64,
+    );
+    let key = derive_aead_key(
+        password.as_bytes(),
+        salt,
+        argon2_m_kib,
+        argon2_t,
+        argon2_p,
+    )?;
+    let ciphertext_with_tag = aead_seal(cipher_id, &key, nonce, payload, &header)?;
     let mut file = header;
     file.extend_from_slice(&ciphertext_with_tag);
     Ok(file)
