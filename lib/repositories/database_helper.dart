@@ -8,6 +8,20 @@ import 'package:sqflite/sqflite.dart';
 const String migrationsDirectory = "assets/sql/migrations";
 const String dbFileName = "dana.db";
 
+/// Splits a SQL migration script into executable statements (on ';'),
+/// dropping chunks with no executable content (whitespace/comment-only).
+/// Android sqflite rejects a comment-only statement ("not an error (code 0
+/// SQLITE_OK)"), which crashed onboarding on device (finding R10c); the
+/// sqflite_common_ffi used by the unit tests tolerates it, so the guard
+/// must live in the splitter, not in the executor.
+Iterable<String> splitSqlStatements(String sql) => sql
+    .split(';')
+    .map((s) => s.trim())
+    .where((s) => s.isNotEmpty && _hasExecutableContent(s));
+
+bool _hasExecutableContent(String statement) =>
+    statement.replaceAll(RegExp(r'--[^\n]*'), '').trim().isNotEmpty;
+
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
   static Database? _database;
@@ -72,8 +86,7 @@ class DatabaseHelper {
 
     while (currentVersion < migrations.length) {
       final migration = await rootBundle.loadString(migrations[currentVersion]);
-      final statements =
-          migration.split(';').map((s) => s.trim()).where((s) => s.isNotEmpty);
+      final statements = splitSqlStatements(migration);
 
       for (final statement in statements) {
         Logger().d(statement);
