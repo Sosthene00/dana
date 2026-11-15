@@ -1,3 +1,4 @@
+pub mod backup;
 pub mod coin_selection;
 mod info;
 pub mod setup;
