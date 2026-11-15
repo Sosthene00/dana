@@ -313,6 +313,140 @@ pub fn build_secrets_block(spend_descriptor: &str) -> String {
     json!({"descriptor": spend_descriptor}).to_string()
 }
 
+/// Reads the Dana secrets block back (§5.2): returns the full encoded
+/// `sp()` spend descriptor string. Restore-side counterpart of
+/// [`build_secrets_block`].
+pub fn parse_secrets_block(body: &str) -> Result<String, PayloadError> {
+    let value: Value = serde_json::from_str(body).map_err(|_| PayloadError::NotAJsonObject)?;
+    let obj = value.as_object().ok_or(PayloadError::NotAJsonObject)?;
+    obj.get("descriptor")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or(PayloadError::MissingField("descriptor"))
+}
+
+/// Reads the `network` name out of a BIP-139 export (§5.1 import
+/// guidelines: a permitted network name is guaranteed by
+/// [`validate_bip139_export`], which callers run first).
+pub fn parse_bip139_network(export: &str) -> Result<String, PayloadError> {
+    let value: Value = serde_json::from_str(export).map_err(|_| PayloadError::NotAJsonObject)?;
+    let obj = value.as_object().ok_or(PayloadError::NotAJsonObject)?;
+    obj.get("network")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or(PayloadError::MissingField("network"))
+}
+
+/// Decodes a 64-hex-character field into 32 bytes. Accepts either case;
+/// anything else is an invalid field.
+fn parse_hex32(
+    field: &'static str,
+    value: Option<&Value>,
+) -> Result<Option<[u8; 32]>, PayloadError> {
+    let Some(s) = value.and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let bytes = s.as_bytes();
+    if bytes.len() != 64 || !bytes.iter().all(|b| b.is_ascii_hexdigit()) {
+        return Err(PayloadError::InvalidField { field });
+    }
+    let mut out = [0u8; 32];
+    for (i, slot) in out.iter_mut().enumerate() {
+        let hi = (bytes[2 * i] as char).to_digit(16).expect("hexdigit") as u8;
+        let lo = (bytes[2 * i + 1] as char).to_digit(16).expect("hexdigit") as u8;
+        *slot = (hi << 4) | lo;
+    }
+    Ok(Some(out))
+}
+
+/// Reads the scan state (§5.1) back out of a BIP-139 export: the first
+/// account's `last_height`, `bip352_labels` and `coins`. Restore-side
+/// counterpart of the fields [`build_bip139_export`] writes; together they
+/// round-trip scan position and per-coin tweak/sp_label attribution (D9).
+pub fn parse_bip139_scan_state(export: &str) -> Result<WalletScanState, PayloadError> {
+    let value: Value = serde_json::from_str(export).map_err(|_| PayloadError::NotAJsonObject)?;
+    let accounts = value
+        .get("accounts")
+        .and_then(Value::as_array)
+        .ok_or(PayloadError::MissingField("accounts"))?;
+    let account = accounts
+        .first()
+        .and_then(Value::as_object)
+        .ok_or(PayloadError::InvalidField { field: "accounts" })?;
+
+    let mut state = WalletScanState::default();
+    if let Some(height) = account.get("last_height") {
+        let height = height.as_u64().and_then(|h| u32::try_from(h).ok()).ok_or(
+            PayloadError::InvalidField {
+                field: "last_height",
+            },
+        )?;
+        state.last_height = Some(height);
+    }
+    if let Some(labels) = account.get("bip352_labels") {
+        state.bip352_labels = Some(match labels {
+            Value::Array(items) => {
+                let mut indices = Vec::with_capacity(items.len());
+                for item in items {
+                    indices.push(item.as_u64().and_then(|v| u32::try_from(v).ok()).ok_or(
+                        PayloadError::InvalidField {
+                            field: "bip352_labels",
+                        },
+                    )?);
+                }
+                Bip352Labels::Indices(indices)
+            }
+            Value::Object(range) => Bip352Labels::Range {
+                start: range
+                    .get("start")
+                    .and_then(Value::as_u64)
+                    .and_then(|v| u32::try_from(v).ok())
+                    .ok_or(PayloadError::InvalidField {
+                        field: "bip352_labels",
+                    })?,
+                end: range
+                    .get("end")
+                    .and_then(Value::as_u64)
+                    .and_then(|v| u32::try_from(v).ok())
+                    .ok_or(PayloadError::InvalidField {
+                        field: "bip352_labels",
+                    })?,
+            },
+            _ => {
+                return Err(PayloadError::InvalidField {
+                    field: "bip352_labels",
+                })
+            }
+        });
+    }
+    if let Some(coins) = account.get("coins").and_then(Value::as_array) {
+        for coin in coins {
+            let obj = coin
+                .as_object()
+                .ok_or(PayloadError::InvalidField { field: "coins" })?;
+            state.coins.push(BackupCoin {
+                outpoint: obj
+                    .get("outpoint")
+                    .and_then(Value::as_str)
+                    .ok_or(PayloadError::MissingField("outpoint"))?
+                    .to_string(),
+                amount_sats: obj.get("amount").and_then(Value::as_u64),
+                tweak: parse_hex32("tweak", obj.get("tweak"))?,
+                sp_label: parse_hex32("sp_label", obj.get("sp_label"))?,
+                block_height: obj
+                    .get("block_height")
+                    .and_then(Value::as_u64)
+                    .and_then(|v| u32::try_from(v).ok()),
+                is_change: obj.get("is_change").and_then(Value::as_bool),
+                derivation_index: obj
+                    .get("derivation_index")
+                    .and_then(Value::as_u64)
+                    .and_then(|v| u32::try_from(v).ok()),
+            });
+        }
+    }
+    Ok(state)
+}
 /// Assembles the v1 payload (§5): BIP-139 section, secrets block, and the
 /// optional companion section, in the fixed order.
 pub fn build_payload(
