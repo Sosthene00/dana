@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:danawallet/generated/rust/api/structs/frigate_event.dart';
 import 'package:danawallet/repositories/frigate_candidates_repository.dart';
 import 'package:danawallet/states/frigate_state.dart';
+import 'package:danawallet/repositories/database_helper.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -16,8 +17,7 @@ Future<void> applyMigrations(Database db) async {
     ..sort((a, b) => a.path.compareTo(b.path));
   for (final f in files) {
     final sql = await f.readAsString();
-    final statements =
-        sql.split(';').map((s) => s.trim()).where((s) => s.isNotEmpty);
+    final statements = splitSqlStatements(sql);
     for (final stmt in statements) {
       await db.execute(stmt);
     }

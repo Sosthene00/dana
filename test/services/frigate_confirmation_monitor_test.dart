@@ -5,6 +5,7 @@ import 'package:danawallet/repositories/frigate_candidates_repository.dart';
 import 'package:danawallet/repositories/owned_outputs_repository.dart';
 import 'package:danawallet/services/electrum_client.dart';
 import 'package:danawallet/services/frigate_confirmation_monitor.dart';
+import 'package:danawallet/repositories/database_helper.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -18,8 +19,7 @@ Future<void> applyMigrations(Database db) async {
     ..sort((a, b) => a.path.compareTo(b.path));
   for (final f in files) {
     final sql = await f.readAsString();
-    final statements =
-        sql.split(';').map((s) => s.trim()).where((s) => s.isNotEmpty);
+    final statements = splitSqlStatements(sql);
     for (final stmt in statements) {
       await db.execute(stmt);
     }
@@ -127,8 +127,8 @@ void main() {
 
     FrigateConfirmationMonitor makeMonitor({void Function()? onGraduated}) {
       return FrigateConfirmationMonitor(
-        clientFactory: (endpoint) async =>
-            ElectrumClient.connect(endpoint, timeout: const Duration(seconds: 5)),
+        clientFactory: (endpoint) async => ElectrumClient.connect(endpoint,
+            timeout: const Duration(seconds: 5)),
         onGraduated: onGraduated,
         reconnectDelay: const Duration(milliseconds: 20),
       );
@@ -143,8 +143,11 @@ void main() {
       await monitor.start(endpoint: '127.0.0.1:$port');
 
       final expected = electrumScripthash(c.script);
-      await waitUntil('subscribe request for $expected', () async =>
-          server.paramsFor('blockchain.scripthash.subscribe').contains(expected));
+      await waitUntil(
+          'subscribe request for $expected',
+          () async => server
+              .paramsFor('blockchain.scripthash.subscribe')
+              .contains(expected));
       await monitor.stop();
     });
 
@@ -170,7 +173,8 @@ void main() {
       await monitor.stop();
     });
 
-    test('confirmation notification graduates into owned_outputs exactly '
+    test(
+        'confirmation notification graduates into owned_outputs exactly '
         'once (B3.3/B3.4)', () async {
       final c = candidate();
       await FrigateCandidatesRepository.instance.upsertCandidate(c);
@@ -196,8 +200,10 @@ void main() {
       var graduations = 0;
       final monitor = makeMonitor(onGraduated: () => graduations++);
       await monitor.start(endpoint: '127.0.0.1:$port');
-      await waitUntil('initial subscribe', () async => server.requestMethods
-          .contains('blockchain.scripthash.subscribe'));
+      await waitUntil(
+          'initial subscribe',
+          () async => server.requestMethods
+              .contains('blockchain.scripthash.subscribe'));
 
       // Mine: the tx now appears in confirmed history; electrs notifies.
       server.handler = (method, params) {
@@ -218,8 +224,11 @@ void main() {
           'blockchain.scripthash.subscribe', [sh, 'status-after-confirm']);
 
       // Candidate is confirmed in the registry…
-      await waitUntil('candidate confirmed', () async =>
-          (await FrigateCandidatesRepository.instance.getCandidate(c.txid, c.vout))
+      await waitUntil(
+          'candidate confirmed',
+          () async =>
+              (await FrigateCandidatesRepository.instance
+                      .getCandidate(c.txid, c.vout))
                   ?.status ==
               FrigateCandidateStatus.confirmed);
       // …and the output exists in owned_outputs.
@@ -296,8 +305,10 @@ void main() {
 
       final monitor = makeMonitor();
       await monitor.start(endpoint: '127.0.0.1:$port');
-      await waitUntil('initial subscribe', () async => server.requestMethods
-          .contains('blockchain.scripthash.subscribe'));
+      await waitUntil(
+          'initial subscribe',
+          () async => server.requestMethods
+              .contains('blockchain.scripthash.subscribe'));
 
       // The tx vanishes (evicted/RBF-replaced): history no longer contains it.
       server.handler = (method, params) {
@@ -315,15 +326,17 @@ void main() {
       server.pushNotification(
           'blockchain.scripthash.subscribe', [sh, 'empty-status']);
 
-      await waitUntil('candidate dropped', () async =>
-          (await FrigateCandidatesRepository.instance.getCandidate(c.txid, c.vout))
+      await waitUntil(
+          'candidate dropped',
+          () async =>
+              (await FrigateCandidatesRepository.instance
+                      .getCandidate(c.txid, c.vout))
                   ?.status ==
               FrigateCandidateStatus.dropped);
       final owned = await db.query('owned_outputs',
           where: 'txid = ? AND vout = ?', whereArgs: [c.txid, c.vout]);
       expect(owned, isEmpty);
-      expect(
-          await FrigateCandidatesRepository.instance.getPendingBalance(), 0);
+      expect(await FrigateCandidatesRepository.instance.getPendingBalance(), 0);
       await monitor.stop();
     });
 
