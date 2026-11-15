@@ -1,8 +1,8 @@
 import 'package:bitcoin_ui/bitcoin_ui.dart';
 import 'package:danawallet/data/enums/amount_display_unit.dart';
 import 'package:danawallet/data/models/bip353_address.dart';
-import 'package:danawallet/data/models/recommended_fee_model.dart';
 import 'package:danawallet/extensions/api_amount.dart';
+import 'package:danawallet/data/models/recommended_fee_model.dart';
 import 'package:danawallet/data/enums/selected_fee.dart';
 import 'package:danawallet/generated/rust/api/structs/input_selection.dart';
 import 'package:danawallet/generated/rust/api/structs/recipient.dart';
@@ -33,7 +33,7 @@ class FeeSelectionScreen extends StatefulWidget {
 class FeeSelectionScreenState extends State<FeeSelectionScreen> {
   RecommendedFeeResponse? _currentFeeRates;
   SelectedFee _selected = SelectedFee.normal;
-  final Map<SelectedFee, CoinSelectProposal> _selections = {};
+  final Map<SelectedFee, InputSelection> _selections = {};
 
   @override
   void initState() {

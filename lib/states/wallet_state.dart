@@ -286,7 +286,7 @@ class WalletState extends ChangeNotifier {
   /// When [forceFeeRate] is set (the user explicitly chose a fee rate), the
   /// selection honoring the requested rate is preferred over a changeless
   /// one (which may exceed it).
-  Future<CoinSelectProposal> proposeCoinSelection(
+  Future<InputSelection> proposeCoinSelection(
       Recipient recipient, int feerate,
       {bool forceFeeRate = false}) async {
     if (_isDrainPayment(recipient)) {
@@ -307,7 +307,7 @@ class WalletState extends ChangeNotifier {
   /// (see [proposeCoinSelection]), so the transaction signed is exactly the
   /// one whose fee was presented to the user.
   Future<SilentPaymentUnsignedTransaction> createUnsignedTxFromSelection(
-      Recipient recipient, CoinSelectProposal selection) async {
+      Recipient recipient, InputSelection selection) async {
     final wallet = await getWalletFromSecureStorage();
 
     if (_isDrainPayment(recipient)) {
