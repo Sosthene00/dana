@@ -72,6 +72,33 @@ class WalletRepository {
     return wallet!;
   }
 
+  /// Restores a wallet from an encrypted backup file's secrets block
+  /// (spec §7.2 step 5, §5.2). The Rust restore core has already validated
+  /// the file and onboarded the descriptor through the pasted-descriptor
+  /// path; this persists the restored keys directly (no seed phrase exists
+  /// on this path) and sets the sync position from the backup's scan state
+  /// so scanning resumes from the backup point (§7.2 restore promise, D9).
+  /// The wallet-exists precondition is D1 (§7.2 step 2): the caller must
+  /// have refused restore earlier if a wallet existed.
+  Future<SpWallet> setupWalletFromKeys(
+      {required ApiScanKey scanKey,
+      required ApiSpendKey spendKey,
+      required Network network,
+      int? lastSync}) async {
+    if ((await secureStorage.readAll()).isNotEmpty) {
+      throw Exception('Previous wallet not properly deleted');
+    }
+
+    await secureStorage.write(key: _keyScanSk, value: scanKey.encode());
+    await secureStorage.write(key: _keySpendKey, value: spendKey.encode());
+    await nonSecureStorage.setString(_keyNetwork, network.name);
+
+    await saveLastSync(lastSync);
+
+    final wallet = await readWallet();
+    return wallet!;
+  }
+
   Future<SpWallet?> readWallet() async {
     final scanKey = await readScanKey();
     final spendKey = await readSpendKey();
