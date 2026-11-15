@@ -3,6 +3,7 @@
 
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
+import '../backup_payload.dart';
 import '../frb_generated.dart';
 import '../lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
@@ -16,7 +17,8 @@ import 'structs/silent_payment_code.dart';
 import 'structs/unsigned_transaction.dart';
 import 'wallet/setup.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `from`, `from`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `SecretKeyHex`, `SpendKeyTag`, `SpendKeyVisitor`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `deserialize`, `drop`, `eq`, `eq`, `expecting`, `fmt`, `fmt`, `fmt`, `from`, `from`, `serialize`, `serialize`, `visit_enum`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ApiScanKey>>
 abstract class ApiScanKey implements RustOpaqueInterface {
@@ -46,6 +48,27 @@ abstract class SpWallet implements RustOpaqueInterface {
       RustLib.instance.api.crateApiWalletSpWalletBroadcastUsingBlindbit(
           blindbitUrl: blindbitUrl, tx: tx);
 
+  /// Produces the encrypted backup file bytes for this wallet.
+  ///
+  /// The BIP-139 section carries the private scan key (allowed on mainnet)
+  /// in the watch-only `sp()` descriptor form and MUST NOT carry spend
+  /// keys or mnemonics (D2, §5.1); the spend secret travels only in the
+  /// secrets block (§5.2), which never exists outside the encrypted
+  /// payload. The password is validated per §6.1 before any bytes are
+  /// written.
+  Future<Uint8List> createBackupFile({required String password});
+
+  /// Device-class fallback variant (§6.3.2, encrypt-side only): identical
+  /// to [`SpWallet::create_backup_file`] but with explicit Argon2id
+  /// parameters, recorded in the header (§3.3) and honored as written by
+  /// every reader (§4). The caller decides the device-class question; the
+  /// password policy (§6.1) applies unchanged.
+  Future<Uint8List> createBackupFileWithKdf(
+      {required String password,
+      required int argon2MKib,
+      required int argon2T,
+      required int argon2P});
+
   SilentPaymentUnsignedTransaction createTransactionFromSelection(
       {required List<OwnedOutput> ownedOutputs,
       required Recipient recipient,
@@ -59,6 +82,10 @@ abstract class SpWallet implements RustOpaqueInterface {
 
   SilentPaymentCode getChangeAddress();
 
+  String? getEncodedDescriptor();
+
+  String getEncodedDescriptorWatchOnly();
+
   Network getNetwork();
 
   SilentPaymentCode getReceivingAddress();
@@ -66,6 +93,10 @@ abstract class SpWallet implements RustOpaqueInterface {
   ApiScanKey getScanKey();
 
   ApiSpendKey getSpendKey();
+
+  String? getTwoKeyDescriptor();
+
+  String getTwoKeyDescriptorWatchOnly();
 
   static void interruptSync() =>
       RustLib.instance.api.crateApiWalletSpWalletInterruptSync();

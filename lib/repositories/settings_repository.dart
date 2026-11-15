@@ -7,6 +7,7 @@ const String _keyDustLimit = "dustlimit";
 const String _keyFiatCurrency = "fiatcurrency";
 const String _keyBlockExplorerUrl = "blockexplorerurl";
 const String _keyAmountDisplayUnit = "amountdisplayunit";
+const String _keyLastBackupDate = "lastbackupdate";
 
 class SettingsRepository {
   final SharedPreferencesAsync prefs = SharedPreferencesAsync();
@@ -24,6 +25,7 @@ class SettingsRepository {
       _keyFiatCurrency,
       _keyBlockExplorerUrl,
       _keyAmountDisplayUnit,
+      _keyLastBackupDate,
     });
   }
 
@@ -89,5 +91,21 @@ class SettingsRepository {
     final unit = await prefs.getString(_keyAmountDisplayUnit);
 
     return unit != null ? AmountDisplayUnit.values.byName(unit) : null;
+  }
+
+  /// §7.1 step 5: after a successful export the backup status is marked
+  /// with the current date; this feeds the §7.3 deletion gate (none /
+  /// exists / verified-with-date).
+  Future<void> setLastBackupDate(DateTime? date) async {
+    if (date != null) {
+      return await prefs.setString(_keyLastBackupDate, date.toIso8601String());
+    } else {
+      return await prefs.remove(_keyLastBackupDate);
+    }
+  }
+
+  Future<DateTime?> getLastBackupDate() async {
+    final stored = await prefs.getString(_keyLastBackupDate);
+    return stored != null ? DateTime.parse(stored) : null;
   }
 }

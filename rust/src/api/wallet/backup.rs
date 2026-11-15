@@ -39,6 +39,40 @@ impl SpWallet {
 
         backup::encrypt(&payload, password).map_err(PayloadError::Container)
     }
+
+    /// Device-class fallback variant (§6.3.2, encrypt-side only): identical
+    /// to [`SpWallet::create_backup_file`] but with explicit Argon2id
+    /// parameters, recorded in the header (§3.3) and honored as written by
+    /// every reader (§4). The caller decides the device-class question; the
+    /// password policy (§6.1) applies unchanged.
+    pub fn create_backup_file_with_kdf(
+        &self,
+        password: &str,
+        argon2_m_kib: u32,
+        argon2_t: u32,
+        argon2_p: u32,
+    ) -> Result<Vec<u8>, PayloadError> {
+        backup_payload::validate_password(password)?;
+
+        let spend_descriptor = self
+            .get_encoded_descriptor()
+            .ok_or(PayloadError::WatchOnlyWallet)?;
+        let scan_descriptor = self.get_encoded_descriptor_watch_only();
+        let bip139_export =
+            backup_payload::build_bip139_export(self.get_network(), &scan_descriptor, None);
+        let secrets_block = backup_payload::build_secrets_block(&spend_descriptor);
+        let payload = backup_payload::build_payload(&bip139_export, &secrets_block, None)?;
+
+        backup::encrypt_with(
+            backup::CIPHER_XCHACHA20_POLY1305,
+            argon2_m_kib,
+            argon2_t,
+            argon2_p,
+            &payload,
+            password,
+        )
+        .map_err(PayloadError::Container)
+    }
 }
 
 #[cfg(test)]
@@ -230,5 +264,67 @@ mod tests {
         let export: Value =
             serde_json::from_str(&String::from_utf8(sections[0].1.clone()).unwrap()).unwrap();
         assert_eq!(export["network"], "testnet3");
+    }
+
+    /// §6.3.2: the reduced fallback (m=32 MiB, t=4, p=1) is written to the
+    /// header (§3.3, offsets 0x10..0x1C little-endian) and the resulting file
+    /// still decrypts with the header params honored as written (§4).
+    #[test]
+    fn reduced_kdf_fallback_is_recorded_in_header_and_still_round_trips() {
+        const REDUCED_M_KIB: u32 = 32768; // 32 MiB
+        const REDUCED_T: u32 = 4;
+        const REDUCED_P: u32 = 1;
+
+        let (wallet, _scan, _spend) = wallet(Network::Mainnet);
+        let file = wallet
+            .create_backup_file_with_kdf(PASSWORD, REDUCED_M_KIB, REDUCED_T, REDUCED_P)
+            .unwrap();
+
+        // Header fields per §3.3: m at 0x10..0x14, t at 0x14..0x18, p at
+        // 0x18..0x1C, little-endian.
+        assert_eq!(&file[0x10..0x14], &REDUCED_M_KIB.to_le_bytes());
+        assert_eq!(&file[0x14..0x18], &REDUCED_T.to_le_bytes());
+        assert_eq!(&file[0x18..0x1C], &REDUCED_P.to_le_bytes());
+
+        // Reader side: no device-class logic — header params used as written.
+        let payload = backup::decrypt(&file, PASSWORD).unwrap();
+        let sections = parse_sections(&payload).unwrap();
+        assert_eq!(
+            sections.iter().map(|(t, _)| *t).collect::<Vec<_>>(),
+            vec![SECTION_TYPE_BIP139, SECTION_TYPE_SECRETS]
+        );
+    }
+
+    /// §6.1 boundary acceptance: exactly 16 scalar values with a lowercase
+    /// and a digit is the accepted minimum; 15 values, no-digit and
+    /// no-lowercase are all rejected. (Mirrors the payload-level test at the
+    /// wallet API level, where the export UI's checks must agree.)
+    #[test]
+    fn password_policy_boundaries_at_the_wallet_api() {
+        let (wallet, _scan, _spend) = wallet(Network::Mainnet);
+
+        // Exactly 16 scalar values: accepted.
+        wallet
+            .create_backup_file("abcdef0123456789")
+            .unwrap_or_else(|e| panic!("16-char lowercase+digit must pass: {e:?}"));
+        // 15 scalar values: rejected.
+        assert_eq!(
+            wallet.create_backup_file("abcdef012345678").unwrap_err(),
+            PayloadError::PasswordTooShort
+        );
+        // 16 scalar values, no digit.
+        assert_eq!(
+            wallet
+                .create_backup_file("abcdefghijklmnop")
+                .unwrap_err(),
+            PayloadError::PasswordNoDigit
+        );
+        // 16 scalar values, no lowercase.
+        assert_eq!(
+            wallet
+                .create_backup_file("0123456789ABCDEF")
+                .unwrap_err(),
+            PayloadError::PasswordNoLowercase
+        );
     }
 }

@@ -3,6 +3,7 @@ import 'package:danawallet/global_functions.dart';
 import 'package:danawallet/screens/recovery/view_mnemonic_screen.dart';
 import 'package:danawallet/screens/settings/wallet/confirm_reset_wallet.dart';
 import 'package:danawallet/screens/settings/wallet/confirm_wallet_deletion.dart';
+import 'package:danawallet/screens/settings/wallet/export_backup_screen.dart';
 import 'package:danawallet/screens/settings/wallet/view_descriptors_screen.dart';
 import 'package:danawallet/screens/settings/widgets/settings_list_tile.dart';
 import 'package:danawallet/widgets/skeletons/screen_skeleton.dart';
@@ -23,6 +24,12 @@ class WalletSettingsScreen extends StatelessWidget {
           subtitle: 'View your recovery phrase',
           onTap: () => _onShowMnemonic(context),
         ),
+      _WalletSettingsItem(
+        icon: Icons.backup_outlined,
+        title: 'Export encrypted backup',
+        subtitle: 'Save an encrypted copy of your wallet',
+        onTap: () => _onExportBackup(context),
+      ),
       _WalletSettingsItem(
         icon: Icons.description_outlined,
         title: 'Show descriptors',
@@ -52,6 +59,10 @@ class WalletSettingsScreen extends StatelessWidget {
 
   void _onWipeWalletButtonPressed(BuildContext context) {
     goToScreen(context, const ConfirmWalletDeletionScreen());
+  }
+
+  void _onExportBackup(BuildContext context) {
+    goToScreen(context, const ExportBackupScreen());
   }
 
   void _onShowDescriptors(BuildContext context) async {
