@@ -79,6 +79,8 @@ impl SpWallet {
 mod tests {
     use std::str::FromStr;
 
+    use spdk_wallet::bitcoin::key::Secp256k1;
+
     use bip392::Sp;
     use serde_json::Value;
 
@@ -89,7 +91,6 @@ mod tests {
     use crate::backup_payload::{
         PayloadError, SECTION_TYPE_BIP139, SECTION_TYPE_SECRETS, parse_sections,
     };
-    use spdk_wallet::bitcoin::key::Secp256k1;
     use spdk_wallet::bitcoin::secp256k1::SecretKey;
     use spdk_wallet::client::SpendKey;
 
@@ -326,5 +327,160 @@ mod tests {
                 .unwrap_err(),
             PayloadError::PasswordNoLowercase
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dart-facing restore API (§7.2) — wires the BK-03 restore core to the app's
+// restore flow.
+// ---------------------------------------------------------------------------
+
+use crate::api::structs::network::Network;
+use crate::backup_restore::{self, RestoreError};
+use super::{ApiScanKey, ApiSpendKey};
+
+/// The wallet material a successful restore hands to the Dart onboarding
+/// flow (§7.2 restore promise). The keys come from the secrets block via
+/// the pasted-descriptor onboarding path (§7.2 step 5); `last_height` is
+/// the BIP-139 scan position (`last_height`, §5.1), which the app stores as
+/// its sync position so scanning resumes from the backup point with no
+/// rescan of pre-backup state (D9). v1 exports written by
+/// `SpWallet::create_backup_file` carry no scan state yet, so the field
+/// is null for those files and the app falls back to its birthday-rescan
+/// path. BIP-352 label indices and per-coin attribution are parsed and
+/// validated by the restore core but have no Dart-side storage in v1, so
+/// they are not surfaced here.
+pub struct ApiRestoredWallet {
+    pub scan_key: ApiScanKey,
+    pub spend_key: ApiSpendKey,
+    pub network: Network,
+    pub last_height: Option<u32>,
+    /// The optional §5.3 companion section body, when present. Its absence
+    /// is not an error (§7.2 restore promise).
+    pub companion: Option<String>,
+}
+
+/// The complete caller-visible failure surface (§7.2 steps 2-3): the D1
+/// gate refusal, or the single generic failure. There is deliberately no
+/// richer error taxonomy — the anti-oracle rule (§7.2 step 3) forbids
+/// distinguishing a wrong password from a corrupt file at this boundary.
+#[derive(Debug)]
+pub enum ApiRestoreFailure {
+    WalletExists,
+    RestoreFailed,
+}
+
+/// Restores from backup file bytes + password (§7.2). The D1 gate input
+/// (`wallet_exists_on_device`) is supplied by the caller from the device's
+/// wallet state; the core re-checks it before touching the file.
+pub fn restore_backup_file_dart(
+    file: Vec<u8>,
+    password: String,
+    wallet_exists_on_device: bool,
+) -> Result<ApiRestoredWallet, ApiRestoreFailure> {
+    match backup_restore::restore_backup_file(&file, &password, wallet_exists_on_device) {
+        Ok(restored) => Ok(ApiRestoredWallet {
+            scan_key: restored.scan_key,
+            spend_key: restored.spend_key,
+            network: restored.network,
+            last_height: restored.scan_state.last_height,
+            companion: restored.companion,
+        }),
+        Err(RestoreError::WalletExists) => Err(ApiRestoreFailure::WalletExists),
+        Err(RestoreError::RestoreFailed) => Err(ApiRestoreFailure::RestoreFailed),
+    }
+}
+
+#[cfg(test)]
+mod restore_api_tests {
+    use spdk_wallet::bitcoin::secp256k1::SecretKey;
+    use spdk_wallet::client::SpendKey;
+
+    use super::*;
+    use crate::api::wallet::{ApiScanKey, ApiSpendKey, SpWallet};
+
+    const PASSWORD: &str = "restore api passphrase 5";
+
+    fn wallet(network: Network) -> SpWallet {
+        let scan = SecretKey::from_slice(&[0x33; 32]).unwrap();
+        let spend = SecretKey::from_slice(&[0x44; 32]).unwrap();
+        SpWallet::new(
+            ApiScanKey(scan),
+            ApiSpendKey(SpendKey::Secret(spend)),
+            network,
+        )
+        .unwrap()
+    }
+
+    fn restore(
+        file: &[u8],
+        password: &str,
+        wallet_exists: bool,
+    ) -> Result<ApiRestoredWallet, ApiRestoreFailure> {
+        restore_backup_file_dart(file.to_vec(), password.to_string(), wallet_exists)
+    }
+
+    #[test]
+    fn d1_gate_refuses_before_the_file_is_examined() {
+        // §7.2 step 2: the refusal is a precondition on device state, not a
+        // fact about the file — even garbage bytes yield WalletExists, never
+        // RestoreFailed.
+        assert!(matches!(
+            restore(b"not a backup file", PASSWORD, true),
+            Err(ApiRestoreFailure::WalletExists)
+        ));
+    }
+
+    #[test]
+    fn wrong_password_and_corrupt_file_collapse_into_one_outcome() {
+        let wallet = wallet(Network::Mainnet);
+        let file = wallet.create_backup_file(PASSWORD).unwrap();
+
+        // §7.2 step 3 anti-oracle: both failures are the same single
+        // RestoreFailed variant; nothing else about them is observable.
+        let wrong_password = restore(&file, "wrong passphrase 9", false);
+        let mut corrupt = file.clone();
+        corrupt[0x15] ^= 0x01; // flip a bit inside argon2_t (AAD-covered)
+        let corrupt_file = restore(&corrupt, PASSWORD, false);
+        let truncated = restore(&file[..file.len() - 8], PASSWORD, false);
+
+        assert!(matches!(
+            wrong_password,
+            Err(ApiRestoreFailure::RestoreFailed)
+        ));
+        assert!(matches!(corrupt_file, Err(ApiRestoreFailure::RestoreFailed)));
+        assert!(matches!(truncated, Err(ApiRestoreFailure::RestoreFailed)));
+    }
+
+    #[test]
+    fn success_round_trips_keys_and_network() {
+        let wallet = wallet(Network::Signet);
+        let file = wallet.create_backup_file(PASSWORD).unwrap();
+
+        match restore(&file, PASSWORD, false) {
+            Ok(restored) => {
+                assert!(matches!(restored.network, Network::Signet));
+                // The restored keys onboard back into an equivalent wallet.
+                let rewallet = SpWallet::new(restored.scan_key, restored.spend_key, restored.network)
+                    .unwrap();
+                assert_eq!(
+                    rewallet.get_encoded_descriptor_watch_only(),
+                    wallet.get_encoded_descriptor_watch_only()
+                );
+                // v1 exports carry no scan state yet (struct doc above).
+                assert_eq!(restored.last_height, None);
+                assert_eq!(restored.companion, None);
+            }
+            Err(e) => panic!("expected success, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn wrong_password_on_wallet_exists_device_still_refuses_with_d1() {
+        // The D1 refusal wins regardless of what is wrong with the file.
+        assert!(matches!(
+            restore(b"junk", "no digits at all here", true),
+            Err(ApiRestoreFailure::WalletExists)
+        ));
     }
 }

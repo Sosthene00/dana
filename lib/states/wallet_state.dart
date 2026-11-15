@@ -15,6 +15,7 @@ import 'package:danawallet/generated/rust/api/structs/unsigned_transaction.dart'
 import 'package:danawallet/data/models/recorded_transaction.dart';
 import 'package:danawallet/generated/rust/api/structs/network.dart';
 import 'package:danawallet/generated/rust/api/wallet.dart';
+import 'package:danawallet/generated/rust/api/wallet/backup.dart';
 import 'package:danawallet/generated/rust/api/wallet/coin_selection.dart';
 import 'package:danawallet/generated/rust/api/wallet/setup.dart';
 import 'package:danawallet/repositories/mempool_api_repository.dart';
@@ -144,6 +145,34 @@ class WalletState extends ChangeNotifier {
 
     // lastSync will be initialized by chainState synchronization service
     lastSync = null;
+
+    await _updateWalletState();
+    _initialized = true;
+  }
+
+  /// Restores a wallet from a decrypted encrypted-backup file (§7.2
+  /// restore promise). The Rust core validated the file and onboarded the
+  /// secrets-block descriptor through the pasted-descriptor path; this
+  /// persists the restored keys and resumes scanning from the backup's
+  /// scan position (BIP-139 `last_height`, D9) — no rescan of pre-backup
+  /// state. No seed phrase exists on this path (descriptor wallet, §5.2);
+  /// the user's original seed phrase remains independently valid.
+  Future<void> restoreWalletFromBackup(ApiRestoredWallet restored) async {
+    _initialized = false;
+    final wallet = await walletRepository.setupWalletFromKeys(
+      scanKey: restored.scanKey,
+      spendKey: restored.spendKey,
+      network: restored.network,
+      lastSync: restored.lastHeight,
+    );
+
+    // fill current state variables
+    receivePaymentCode = wallet.getReceivingAddress();
+    changePaymentCode = wallet.getChangeAddress();
+    birthday = null;
+    network = restored.network;
+    hasSeedPhrase = false;
+    lastSync = restored.lastHeight;
 
     await _updateWalletState();
     _initialized = true;
@@ -286,8 +315,7 @@ class WalletState extends ChangeNotifier {
   /// When [forceFeeRate] is set (the user explicitly chose a fee rate), the
   /// selection honoring the requested rate is preferred over a changeless
   /// one (which may exceed it).
-  Future<InputSelection> proposeCoinSelection(
-      Recipient recipient, int feerate,
+  Future<InputSelection> proposeCoinSelection(Recipient recipient, int feerate,
       {bool forceFeeRate = false}) async {
     if (_isDrainPayment(recipient)) {
       return selectUtxosToDrain(

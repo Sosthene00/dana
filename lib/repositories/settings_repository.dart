@@ -8,6 +8,7 @@ const String _keyFiatCurrency = "fiatcurrency";
 const String _keyBlockExplorerUrl = "blockexplorerurl";
 const String _keyAmountDisplayUnit = "amountdisplayunit";
 const String _keyLastBackupDate = "lastbackupdate";
+const String _keyLastBackupVerified = "lastbackupverified";
 
 class SettingsRepository {
   final SharedPreferencesAsync prefs = SharedPreferencesAsync();
@@ -26,6 +27,7 @@ class SettingsRepository {
       _keyBlockExplorerUrl,
       _keyAmountDisplayUnit,
       _keyLastBackupDate,
+      _keyLastBackupVerified,
     });
   }
 
@@ -102,6 +104,18 @@ class SettingsRepository {
     } else {
       return await prefs.remove(_keyLastBackupDate);
     }
+  }
+
+  /// Whether the current backup has been verified by an actual restore
+  /// test (§7.1 step 5: "Verified" status requires a restore). v1 defers
+  /// the verify flow itself; the flag exists so the §7.3 deletion gate can
+  /// already distinguish `exists` from `verified`.
+  Future<void> setLastBackupVerified(bool verified) async {
+    return await prefs.setBool(_keyLastBackupVerified, verified);
+  }
+
+  Future<bool> isLastBackupVerified() async {
+    return await prefs.getBool(_keyLastBackupVerified) ?? false;
   }
 
   Future<DateTime?> getLastBackupDate() async {
