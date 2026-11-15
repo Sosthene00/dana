@@ -3,23 +3,35 @@ import 'dart:typed_data';
 import 'package:danawallet/generated/rust/api/structs/frigate_event.dart';
 import 'package:danawallet/generated/rust/api/structs/owned_output.dart';
 import 'package:danawallet/repositories/frigate_candidates_repository.dart';
+import 'package:danawallet/repositories/owned_outputs_repository.dart';
+import 'package:danawallet/repositories/transactions_repository.dart';
 import 'package:danawallet/services/writer_lease.dart';
 import 'package:logger/logger.dart';
 
-/// Dart-side consumer of the frigate event stream for the mempool leg
-/// (phase 2, B3.1/B3.4; the state-touching handling lives in Dart per B2.7).
+/// Dart-side consumer of the frigate event stream.
 ///
-/// `Unconfirmed` events (height <= 0, delivered in the subscribe response —
-/// frigate indexes mempool only at process start) are written into the
-/// `frigate_candidates` registry. Dedupe is the outpoint upsert (B3.4): a
-/// re-subscribe re-delivers the whole mempool snapshot and the registry
-/// collapses it back to one row per outpoint.
+/// The MEMPOOL leg (phase 2, B3.1/B3.4; the state-touching handling lives in
+/// Dart per B2.7): `Unconfirmed` events (height <= 0, delivered in the
+/// subscribe response — frigate indexes mempool only at process start) are
+/// written into the `frigate_candidates` registry. Dedupe is the outpoint
+/// upsert (B3.4): a re-subscribe re-delivers the whole mempool snapshot and
+/// the registry collapses it back to one row per outpoint.
 ///
-/// Phase scope: ONLY the mempool leg. Confirmed/Spent/Tip/CaughtUp/
-/// Disconnected events are deliberately not handled here — the confirmed leg
-/// is phase 1 (R3) and graduation is phase 3 (R5, B3.3).
+/// The HISTORY leg (R3, B1.2/B3.4): `Confirmed` events (historic AND live
+/// legs) write their receipts through the existing confirmed-state path —
+/// `owned_outputs` INSERT OR FAIL, so a re-delivered confirmed output from a
+/// re-subscribe's history replay dedupes on the outpoint (B3.4: counted
+/// exactly once). A confirmed outpoint that still sits as a pending
+/// candidate leaves the unconfirmed line (B4.1) — it is confirmed state now.
+///
+/// Phase scope: Tip/CaughtUp/Spent/Disconnected touch no state here — the
+/// catch-up bar and the unreachable banner are lifecycle UI state
+/// (B4.3/B4.4, handled by FrigateState.applyLifecycle); graduation of
+/// mempool candidates is phase 3 (B3.3, electrum confirmation alone).
 class FrigateEventHandler {
   final FrigateCandidatesRepository _candidatesRepository;
+  final OwnedOutputsRepository _ownedOutputsRepository;
+  final TransactionsRepository _transactionsRepository;
 
   /// Called after the candidate registry may have changed, so the UI state
   /// can refresh (unconfirmed balance line, B4.1).
@@ -28,6 +40,10 @@ class FrigateEventHandler {
   /// Called after new candidates were recorded, so the phase-3 confirmation
   /// monitor can subscribe their scripthashes (B3.7).
   final void Function()? onCandidatesRecorded;
+
+  /// Called after confirmed receipts were written into `owned_outputs` (R3) —
+  /// the confirmed balance refreshes from the repository.
+  final void Function()? onConfirmed;
 
   /// test seam: deterministic clock for `first_seen`.
   final int Function()? nowMillis;
@@ -40,25 +56,72 @@ class FrigateEventHandler {
 
   FrigateEventHandler({
     FrigateCandidatesRepository? candidatesRepository,
+    OwnedOutputsRepository? ownedOutputsRepository,
+    TransactionsRepository? transactionsRepository,
     this.onChanged,
     this.onCandidatesRecorded,
+    this.onConfirmed,
     this.nowMillis,
     this.writerLease,
-  }) : _candidatesRepository =
-            candidatesRepository ?? FrigateCandidatesRepository.instance;
+  })  : _candidatesRepository =
+            candidatesRepository ?? FrigateCandidatesRepository.instance,
+        _ownedOutputsRepository =
+            ownedOutputsRepository ?? OwnedOutputsRepository.instance,
+        _transactionsRepository =
+            transactionsRepository ?? TransactionsRepository.instance;
 
   Future<void> handleEvent(FrigateEventDto event) async {
     switch (event) {
       case FrigateEventDto_Unconfirmed(:final txid, :final outputs):
         await _recordCandidates(txid, outputs);
-      case FrigateEventDto_Confirmed():
+      case FrigateEventDto_Confirmed(
+          :final blkheight,
+          :final blkhash,
+          :final foundOutputs
+        ):
+        await _recordConfirmedReceipts(blkheight, blkhash, foundOutputs);
       case FrigateEventDto_Tip():
       case FrigateEventDto_CaughtUp():
       case FrigateEventDto_Spent():
       case FrigateEventDto_Disconnected():
-        // out of phase-2 scope (see class doc); candidates are untouched.
+        // lifecycle-only events (see class doc); sync state is untouched.
         break;
     }
+  }
+
+  /// History leg (R3): write the scanner-reported confirmed receipts through
+  /// the EXISTING confirmed-state path, exactly as the blindbit sync engine
+  /// does: the incoming transaction row first (transactions FK + history),
+  /// then `owned_outputs` INSERT OR FAIL on the outpoint — the B3.4 dedupe:
+  /// a re-delivered confirmed output (a re-subscribe's history replay)
+  /// inserts nothing a second time. A matching pending candidate is marked
+  /// confirmed — the satoshis now live in the confirmed balance and must not
+  /// also sit in the unconfirmed line (B4.1).
+  Future<void> _recordConfirmedReceipts(
+      int blkheight, String blkhash, List<OwnedOutput> outputs) async {
+    if (outputs.isEmpty) return;
+    // B2.8: the lease check sits inside the sync-state write path — a live
+    // foreign writer must never see this registry written concurrently.
+    await writerLease?.ensureOwnership();
+    for (final output in outputs) {
+      final outpoint = output.outpoint;
+      await _transactionsRepository.addIncomingTransaction(
+        txid: outpoint.txid,
+        confirmationHeight: blkheight,
+        confirmationBlockhash: blkhash,
+      );
+      await _ownedOutputsRepository.insertOutput(output: output);
+      final candidate =
+          await _candidatesRepository.getCandidate(outpoint.txid, outpoint.vout);
+      if (candidate != null &&
+          candidate.status == FrigateCandidateStatus.pending) {
+        await _candidatesRepository.markConfirmed(outpoint.txid, outpoint.vout);
+      }
+    }
+    Logger().i(
+        'frigate history leg: ${outputs.length} confirmed receipt(s) written to owned_outputs (R3/B3.4)');
+    onChanged?.call();
+    onConfirmed?.call();
   }
 
   Future<void> _recordCandidates(

@@ -45,12 +45,24 @@ where
     while let Some(event) = events.next().await {
         match event {
             frigate_scanner::FrigateEvent::Disconnected(reason) => {
+                // B4.4: surface the disconnect to the Dart side (the
+                // unreachable banner) before the supervisor takes over the
+                // retry.
+                emit(map_frigate_event(frigate_scanner::FrigateEvent::Disconnected(
+                    reason.clone(),
+                )));
                 return PumpOutcome::Disconnected(reason);
             }
             other => emit(map_frigate_event(other)),
         }
     }
-    PumpOutcome::Disconnected("frigate event stream ended".to_owned())
+    // B4.4: the stream ended without an explicit `Disconnected` — synthesize
+    // one so the Dart side still learns the backend went away.
+    let reason = "frigate event stream ended".to_owned();
+    emit(map_frigate_event(frigate_scanner::FrigateEvent::Disconnected(
+        reason.clone(),
+    )));
+    PumpOutcome::Disconnected(reason)
 }
 
 /// Everything one subscription attempt needs. Rebuilt identically on every
@@ -279,18 +291,42 @@ mod tests {
     }
 
     /// A `Disconnected` event ends the pump, carries the reason to the
-    /// supervisor, and nothing is forwarded after it.
+    /// supervisor, and nothing is forwarded after it. R3 (B4.4): the
+    /// `Disconnected` is ALSO emitted as a DTO so the Dart side can show the
+    /// unreachable banner — before the pump returns.
     #[tokio::test]
     async fn pump_stops_on_disconnected() {
         let (outcome, emitted) =
             collect_dtos(vec![tip(100), disconnected("connection reset"), tip(101)]);
 
         assert_eq!(outcome, PumpOutcome::Disconnected("connection reset".into()));
-        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted.len(), 2, "Tip + the Disconnected DTO (B4.4)");
         match &emitted[0] {
             FrigateEventDto::Tip { height, .. } => assert_eq!(*height, 100),
             other => panic!("expected Tip before the disconnect, got {other:?}"),
         }
+        match &emitted[1] {
+            FrigateEventDto::Disconnected { reason } => {
+                assert_eq!(reason, "connection reset")
+            }
+            other => panic!("expected Disconnected DTO, got {other:?}"),
+        }
+    }
+
+    /// R3 (B4.4): a stream that ends WITHOUT an explicit `Disconnected`
+    /// event (e.g. the scanner worker dropped) must still surface a
+    /// `Disconnected` DTO — the supervisor will retry, and the UI must know
+    /// the backend went away.
+    #[tokio::test]
+    async fn pump_emits_disconnected_dto_when_stream_ends() {
+        let (outcome, emitted) = collect_dtos(vec![tip(100)]);
+
+        assert!(matches!(outcome, PumpOutcome::Disconnected(_)));
+        assert_eq!(emitted.len(), 2, "Tip + the synthesized Disconnected DTO");
+        assert!(matches!(
+            emitted[1],
+            FrigateEventDto::Disconnected { .. }
+        ));
     }
 
     /// Rig probe (NOT a unit test): on the regtest rig the subscription must

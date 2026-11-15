@@ -146,17 +146,22 @@ class SynchronizationTaskHandler extends TaskHandler {
       final frigateUrl = await SettingsRepository.instance.getFrigateUrl();
       if (frigateUrl == null || frigateUrl.isEmpty) return;
 
+      // The service holds the subscription — its lifecycle UI state (the
+      // catch-up bar and the unreachable banner, B4.3/B4.4) ships to the
+      // main isolate with every event ping.
+      final serviceFrigateState = FrigateState();
       final controller = FrigateSubscriptionController(
-        frigateState: FrigateState(),
+        frigateState: serviceFrigateState,
         writerLease: WriterLease(writerId: WriterLease.serviceWriterId),
         // graduation moved satoshis into owned_outputs — the app refreshes
         // the confirmed balance from the repository.
         onGraduated: () =>
             FlutterForegroundTask.sendDataToMain({bgKeyRefresh: true}),
         // every processed event may have changed the candidate registry —
-        // the app re-reads it from the DB (B2.2).
-        onEventProcessed: () =>
-            FlutterForegroundTask.sendDataToMain({bgKeyFrigateRefresh: true}),
+        // the app re-reads it from the DB (B2.2) and applies the lifecycle
+        // snapshot (bar/banner, B4.3/B4.4).
+        onEventProcessed: () => FlutterForegroundTask.sendDataToMain(
+            {bgKeyFrigateRefresh: true, ...serviceFrigateState.snapshot()}),
       );
       _frigateWriter = controller;
 

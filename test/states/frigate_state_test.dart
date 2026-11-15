@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:danawallet/generated/rust/api/structs/frigate_event.dart';
 import 'package:danawallet/repositories/frigate_candidates_repository.dart';
 import 'package:danawallet/states/frigate_state.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -102,6 +103,128 @@ void main() {
       await state.refresh();
       expect(state.pendingBalanceSat, isNull,
           reason: 'graduation clears the unconfirmed line (B4.2)');
+    });
+  });
+
+  group('FrigateState catch-up progress bar (B4.3)', () {
+    late FrigateState state;
+
+    setUp(() {
+      state = FrigateState();
+    });
+
+    test('the bar is hidden while no subscription is catching up', () {
+      expect(state.catchUpBarVisible, isFalse);
+      expect(state.catchUpProgress, isNull);
+    });
+
+    test('indeterminate until the first progress report; Tip shows the bar',
+        () {
+      state.applyLifecycle(const FrigateEventDto.tip(height: 900, hash: 'ab'));
+      expect(state.catchUpBarVisible, isTrue);
+      expect(state.catchUpProgress, isNull,
+          reason: 'indeterminate: the scanner has reported no progress yet');
+    });
+
+    test('determinate from scanner-reported heights (Confirmed vs Tip)', () {
+      state.applyLifecycle(const FrigateEventDto.tip(height: 900, hash: 'ab'));
+      state.applyLifecycle(FrigateEventDto.confirmed(
+          blkheight: 450, blkhash: 'ab', foundOutputs: const []));
+      expect(state.catchUpBarVisible, isTrue);
+      expect(state.catchUpProgress, closeTo(0.5, 1e-9),
+          reason: 'determinate from the scanner-reported blkheight, never '
+              'interpolated');
+    });
+
+    test('a later Tip re-arms the determinate denominator', () {
+      state.applyLifecycle(const FrigateEventDto.tip(height: 900, hash: 'ab'));
+      state.applyLifecycle(FrigateEventDto.confirmed(
+          blkheight: 450, blkhash: 'ab', foundOutputs: const []));
+      state.applyLifecycle(const FrigateEventDto.tip(height: 1000, hash: 'cd'));
+      state.applyLifecycle(FrigateEventDto.confirmed(
+          blkheight: 250, blkhash: 'cd', foundOutputs: const []));
+      expect(state.catchUpProgress, closeTo(0.25, 1e-9));
+    });
+
+    test('hidden at CaughtUp, and the value is reset (never stale)', () {
+      state.applyLifecycle(const FrigateEventDto.tip(height: 900, hash: 'ab'));
+      state.applyLifecycle(FrigateEventDto.confirmed(
+          blkheight: 450, blkhash: 'ab', foundOutputs: const []));
+      state.applyLifecycle(const FrigateEventDto.caughtUp());
+      expect(state.catchUpBarVisible, isFalse);
+      expect(state.catchUpProgress, isNull);
+    });
+
+    test('mempool (Unconfirmed) and Spent events never touch the bar', () {
+      state.applyLifecycle(const FrigateEventDto.tip(height: 900, hash: 'ab'));
+      state.applyLifecycle(FrigateEventDto.confirmed(
+          blkheight: 450, blkhash: 'ab', foundOutputs: const []));
+
+      state.applyLifecycle(FrigateEventDto.unconfirmed(
+          txid: 'ff', outputs: const []));
+      state.applyLifecycle(const FrigateEventDto.spent(outpoints: []));
+
+      expect(state.catchUpBarVisible, isTrue);
+      expect(state.catchUpProgress, closeTo(0.5, 1e-9),
+          reason: 'mempool events never touch the progress bar (B4.3)');
+    });
+
+    test('a new history replay (re-subscribe) starts a fresh indeterminate bar',
+        () {
+      state.applyLifecycle(const FrigateEventDto.tip(height: 900, hash: 'ab'));
+      state.applyLifecycle(FrigateEventDto.confirmed(
+          blkheight: 450, blkhash: 'ab', foundOutputs: const []));
+      state.applyLifecycle(const FrigateEventDto.caughtUp());
+      // supervisor re-subscribes from the checkpoint (B2.4)
+      state.applyLifecycle(const FrigateEventDto.tip(height: 900, hash: 'ab'));
+      expect(state.catchUpBarVisible, isTrue);
+      expect(state.catchUpProgress, isNull,
+          reason: 'never interpolated across replays');
+    });
+
+    test('snapshot round-trips the bar state across the isolate boundary',
+        () {
+      state.applyLifecycle(const FrigateEventDto.tip(height: 900, hash: 'ab'));
+      state.applyLifecycle(FrigateEventDto.confirmed(
+          blkheight: 450, blkhash: 'ab', foundOutputs: const []));
+
+      final restored = FrigateState()..applySnapshot(state.snapshot());
+      expect(restored.catchUpBarVisible, state.catchUpBarVisible);
+      expect(restored.catchUpProgress, state.catchUpProgress);
+      expect(restored.backendUnreachable, state.backendUnreachable);
+    });
+  });
+
+  group('FrigateState unreachable banner (B4.4)', () {
+    late FrigateState state;
+
+    setUp(() {
+      state = FrigateState();
+    });
+
+    test('no banner while the backend is reachable', () {
+      expect(state.backendUnreachable, isFalse);
+    });
+
+    test('a Disconnected event shows the banner', () {
+      state.applyLifecycle(
+          const FrigateEventDto.disconnected(reason: 'connection reset'));
+      expect(state.backendUnreachable, isTrue);
+    });
+
+    test('the banner clears on the next successful interaction (Tip)', () {
+      state.applyLifecycle(
+          const FrigateEventDto.disconnected(reason: 'connection reset'));
+      expect(state.backendUnreachable, isTrue);
+
+      state.applyLifecycle(const FrigateEventDto.tip(height: 901, hash: 'ab'));
+      expect(state.backendUnreachable, isFalse,
+          reason: 'the subscription re-delivered a live event (B4.4)');
+    });
+
+    test('a failed start marks the backend unreachable', () {
+      state.markUnreachable();
+      expect(state.backendUnreachable, isTrue);
     });
   });
 }

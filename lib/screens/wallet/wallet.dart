@@ -132,6 +132,16 @@ class WalletScreenState extends State<WalletScreen> {
     );
   }
 
+  /// B4.4: explicit banner while the frigate backend is unreachable — no
+  /// crash, no data loss, no silent fallback; clears on the next successful
+  /// interaction (the subscription's first live event after recovery).
+  Widget buildFrigateUnreachableBanner() {
+    return InlineWarningBanner(
+      icon: Icons.cloud_off,
+      message: 'Frigate unreachable — will retry',
+    );
+  }
+
   Future<void> _retryChainConnection(ChainState chainState) async {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -525,6 +535,7 @@ class WalletScreenState extends State<WalletScreen> {
 
   Widget buildFundingScreen(String silentPaymentAddress, String? danaAddress,
       SyncProgressState syncProgress, ChainState chainState) {
+    final frigateState = Provider.of<FrigateState>(context);
     return Column(
       children: [
         // Show sync progress when actively scanning
@@ -534,6 +545,14 @@ class WalletScreenState extends State<WalletScreen> {
             maintainSize: true,
             maintainState: true,
             child: buildSyncProgress(syncProgress.progress)),
+        // frigate catch-up progress (B4.3): indeterminate until the scanner
+        // reports progress, hidden at CaughtUp, never interpolated
+        Visibility(
+            visible: frigateState.catchUpBarVisible,
+            maintainAnimation: true,
+            maintainSize: true,
+            maintainState: true,
+            child: buildSyncProgress(frigateState.catchUpProgress)),
         // Show offline status when chain sync has connection issues
         Visibility(
             visible: !chainState.available,
@@ -541,6 +560,13 @@ class WalletScreenState extends State<WalletScreen> {
             maintainSize: true,
             maintainState: true,
             child: buildOfflineStatus(chainState)),
+        // frigate backend unreachable (B4.4)
+        Visibility(
+            visible: frigateState.backendUnreachable,
+            maintainAnimation: true,
+            maintainSize: true,
+            maintainState: true,
+            child: buildFrigateUnreachableBanner()),
         const SizedBox(height: 20.0),
         Expanded(
           child: Center(
@@ -670,6 +696,22 @@ class WalletScreenState extends State<WalletScreen> {
                     maintainSize: true,
                     maintainState: true,
                     child: buildOfflineStatus(chainState)),
+                // frigate catch-up progress (B4.3): indeterminate until the
+                // scanner reports progress, hidden at CaughtUp, never
+                // interpolated
+                Visibility(
+                    visible: frigateState.catchUpBarVisible,
+                    maintainAnimation: true,
+                    maintainSize: true,
+                    maintainState: true,
+                    child: buildSyncProgress(frigateState.catchUpProgress)),
+                // frigate backend unreachable (B4.4)
+                Visibility(
+                    visible: frigateState.backendUnreachable,
+                    maintainAnimation: true,
+                    maintainSize: true,
+                    maintainState: true,
+                    child: buildFrigateUnreachableBanner()),
                 const SizedBox(height: 20.0),
                 buildAmountDisplay(amount, exchangeRate,
                     displayPreference.amountDisplayUnit, displayPreference),
