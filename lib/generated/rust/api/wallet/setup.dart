@@ -54,6 +54,11 @@ sealed class WalletSetupType with _$WalletSetupType {
   const factory WalletSetupType.mnemonic(
     String field0,
   ) = WalletSetupType_Mnemonic;
+
+  /// An `sp()` descriptor that includes the spend private key.
+  const factory WalletSetupType.descriptor(
+    String field0,
+  ) = WalletSetupType_Descriptor;
   const factory WalletSetupType.full(
     String field0,
     String field1,

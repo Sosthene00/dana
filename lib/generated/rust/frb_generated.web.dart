@@ -24,6 +24,7 @@ import 'api/structs/unsigned_transaction.dart';
 import 'api/wallet.dart';
 import 'api/wallet/coin_selection.dart';
 import 'api/wallet/setup.dart';
+import 'backup_payload.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'frb_generated.dart';
@@ -49,6 +50,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   CrossPlatformFinalizerArg
       get rust_arc_decrement_strong_count_InputSelectionPtr => wire
           .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInputSelection;
+
+  CrossPlatformFinalizerArg
+      get rust_arc_decrement_strong_count_PayloadErrorPtr => wire
+          .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerPayloadError;
 
   CrossPlatformFinalizerArg
       get rust_arc_decrement_strong_count_PaymentCodePtr => wire
@@ -88,6 +93,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   InputSelection
       dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInputSelection(
+          dynamic raw);
+
+  @protected
+  PayloadError
+      dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerPayloadError(
           dynamic raw);
 
   @protected
@@ -183,6 +193,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   InputSelection
       dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInputSelection(
+          dynamic raw);
+
+  @protected
+  PayloadError
+      dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerPayloadError(
           dynamic raw);
 
   @protected
@@ -385,6 +400,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           SseDeserializer deserializer);
 
   @protected
+  PayloadError
+      sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerPayloadError(
+          SseDeserializer deserializer);
+
+  @protected
   PaymentCode
       sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerPaymentCode(
           SseDeserializer deserializer);
@@ -477,6 +497,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   InputSelection
       sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInputSelection(
+          SseDeserializer deserializer);
+
+  @protected
+  PayloadError
+      sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerPayloadError(
           SseDeserializer deserializer);
 
   @protected
@@ -687,6 +712,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+      sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerPayloadError(
+          PayloadError self, SseSerializer serializer);
+
+  @protected
+  void
       sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerPaymentCode(
           PaymentCode self, SseSerializer serializer);
 
@@ -779,6 +809,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
       sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInputSelection(
           InputSelection self, SseSerializer serializer);
+
+  @protected
+  void
+      sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerPayloadError(
+          PayloadError self, SseSerializer serializer);
 
   @protected
   void
@@ -1016,6 +1051,18 @@ class RustLibWire implements BaseWire {
           .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInputSelection(
               ptr);
 
+  void rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerPayloadError(
+          int ptr) =>
+      wasmModule
+          .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerPayloadError(
+              ptr);
+
+  void rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerPayloadError(
+          int ptr) =>
+      wasmModule
+          .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerPayloadError(
+              ptr);
+
   void rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerPaymentCode(
           int ptr) =>
       wasmModule
@@ -1117,6 +1164,14 @@ extension type RustLibWasmModule._(JSObject _) implements JSObject {
 
   external void
       rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInputSelection(
+          int ptr);
+
+  external void
+      rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerPayloadError(
+          int ptr);
+
+  external void
+      rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerPayloadError(
           int ptr);
 
   external void

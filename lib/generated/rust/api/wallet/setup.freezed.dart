@@ -20,6 +20,7 @@ mixin _$WalletSetupType {
   TResult when<TResult extends Object?>({
     required TResult Function() newWallet,
     required TResult Function(String field0) mnemonic,
+    required TResult Function(String field0) descriptor,
     required TResult Function(String field0, String field1) full,
     required TResult Function(String field0, String field1) watchOnly,
   }) =>
@@ -28,6 +29,7 @@ mixin _$WalletSetupType {
   TResult? whenOrNull<TResult extends Object?>({
     TResult? Function()? newWallet,
     TResult? Function(String field0)? mnemonic,
+    TResult? Function(String field0)? descriptor,
     TResult? Function(String field0, String field1)? full,
     TResult? Function(String field0, String field1)? watchOnly,
   }) =>
@@ -36,6 +38,7 @@ mixin _$WalletSetupType {
   TResult maybeWhen<TResult extends Object?>({
     TResult Function()? newWallet,
     TResult Function(String field0)? mnemonic,
+    TResult Function(String field0)? descriptor,
     TResult Function(String field0, String field1)? full,
     TResult Function(String field0, String field1)? watchOnly,
     required TResult orElse(),
@@ -45,6 +48,7 @@ mixin _$WalletSetupType {
   TResult map<TResult extends Object?>({
     required TResult Function(WalletSetupType_NewWallet value) newWallet,
     required TResult Function(WalletSetupType_Mnemonic value) mnemonic,
+    required TResult Function(WalletSetupType_Descriptor value) descriptor,
     required TResult Function(WalletSetupType_Full value) full,
     required TResult Function(WalletSetupType_WatchOnly value) watchOnly,
   }) =>
@@ -53,6 +57,7 @@ mixin _$WalletSetupType {
   TResult? mapOrNull<TResult extends Object?>({
     TResult? Function(WalletSetupType_NewWallet value)? newWallet,
     TResult? Function(WalletSetupType_Mnemonic value)? mnemonic,
+    TResult? Function(WalletSetupType_Descriptor value)? descriptor,
     TResult? Function(WalletSetupType_Full value)? full,
     TResult? Function(WalletSetupType_WatchOnly value)? watchOnly,
   }) =>
@@ -61,6 +66,7 @@ mixin _$WalletSetupType {
   TResult maybeMap<TResult extends Object?>({
     TResult Function(WalletSetupType_NewWallet value)? newWallet,
     TResult Function(WalletSetupType_Mnemonic value)? mnemonic,
+    TResult Function(WalletSetupType_Descriptor value)? descriptor,
     TResult Function(WalletSetupType_Full value)? full,
     TResult Function(WalletSetupType_WatchOnly value)? watchOnly,
     required TResult orElse(),
@@ -135,6 +141,7 @@ class _$WalletSetupType_NewWalletImpl extends WalletSetupType_NewWallet {
   TResult when<TResult extends Object?>({
     required TResult Function() newWallet,
     required TResult Function(String field0) mnemonic,
+    required TResult Function(String field0) descriptor,
     required TResult Function(String field0, String field1) full,
     required TResult Function(String field0, String field1) watchOnly,
   }) {
@@ -146,6 +153,7 @@ class _$WalletSetupType_NewWalletImpl extends WalletSetupType_NewWallet {
   TResult? whenOrNull<TResult extends Object?>({
     TResult? Function()? newWallet,
     TResult? Function(String field0)? mnemonic,
+    TResult? Function(String field0)? descriptor,
     TResult? Function(String field0, String field1)? full,
     TResult? Function(String field0, String field1)? watchOnly,
   }) {
@@ -157,6 +165,7 @@ class _$WalletSetupType_NewWalletImpl extends WalletSetupType_NewWallet {
   TResult maybeWhen<TResult extends Object?>({
     TResult Function()? newWallet,
     TResult Function(String field0)? mnemonic,
+    TResult Function(String field0)? descriptor,
     TResult Function(String field0, String field1)? full,
     TResult Function(String field0, String field1)? watchOnly,
     required TResult orElse(),
@@ -172,6 +181,7 @@ class _$WalletSetupType_NewWalletImpl extends WalletSetupType_NewWallet {
   TResult map<TResult extends Object?>({
     required TResult Function(WalletSetupType_NewWallet value) newWallet,
     required TResult Function(WalletSetupType_Mnemonic value) mnemonic,
+    required TResult Function(WalletSetupType_Descriptor value) descriptor,
     required TResult Function(WalletSetupType_Full value) full,
     required TResult Function(WalletSetupType_WatchOnly value) watchOnly,
   }) {
@@ -183,6 +193,7 @@ class _$WalletSetupType_NewWalletImpl extends WalletSetupType_NewWallet {
   TResult? mapOrNull<TResult extends Object?>({
     TResult? Function(WalletSetupType_NewWallet value)? newWallet,
     TResult? Function(WalletSetupType_Mnemonic value)? mnemonic,
+    TResult? Function(WalletSetupType_Descriptor value)? descriptor,
     TResult? Function(WalletSetupType_Full value)? full,
     TResult? Function(WalletSetupType_WatchOnly value)? watchOnly,
   }) {
@@ -194,6 +205,7 @@ class _$WalletSetupType_NewWalletImpl extends WalletSetupType_NewWallet {
   TResult maybeMap<TResult extends Object?>({
     TResult Function(WalletSetupType_NewWallet value)? newWallet,
     TResult Function(WalletSetupType_Mnemonic value)? mnemonic,
+    TResult Function(WalletSetupType_Descriptor value)? descriptor,
     TResult Function(WalletSetupType_Full value)? full,
     TResult Function(WalletSetupType_WatchOnly value)? watchOnly,
     required TResult orElse(),
@@ -283,6 +295,7 @@ class _$WalletSetupType_MnemonicImpl extends WalletSetupType_Mnemonic {
   TResult when<TResult extends Object?>({
     required TResult Function() newWallet,
     required TResult Function(String field0) mnemonic,
+    required TResult Function(String field0) descriptor,
     required TResult Function(String field0, String field1) full,
     required TResult Function(String field0, String field1) watchOnly,
   }) {
@@ -294,6 +307,7 @@ class _$WalletSetupType_MnemonicImpl extends WalletSetupType_Mnemonic {
   TResult? whenOrNull<TResult extends Object?>({
     TResult? Function()? newWallet,
     TResult? Function(String field0)? mnemonic,
+    TResult? Function(String field0)? descriptor,
     TResult? Function(String field0, String field1)? full,
     TResult? Function(String field0, String field1)? watchOnly,
   }) {
@@ -305,6 +319,7 @@ class _$WalletSetupType_MnemonicImpl extends WalletSetupType_Mnemonic {
   TResult maybeWhen<TResult extends Object?>({
     TResult Function()? newWallet,
     TResult Function(String field0)? mnemonic,
+    TResult Function(String field0)? descriptor,
     TResult Function(String field0, String field1)? full,
     TResult Function(String field0, String field1)? watchOnly,
     required TResult orElse(),
@@ -320,6 +335,7 @@ class _$WalletSetupType_MnemonicImpl extends WalletSetupType_Mnemonic {
   TResult map<TResult extends Object?>({
     required TResult Function(WalletSetupType_NewWallet value) newWallet,
     required TResult Function(WalletSetupType_Mnemonic value) mnemonic,
+    required TResult Function(WalletSetupType_Descriptor value) descriptor,
     required TResult Function(WalletSetupType_Full value) full,
     required TResult Function(WalletSetupType_WatchOnly value) watchOnly,
   }) {
@@ -331,6 +347,7 @@ class _$WalletSetupType_MnemonicImpl extends WalletSetupType_Mnemonic {
   TResult? mapOrNull<TResult extends Object?>({
     TResult? Function(WalletSetupType_NewWallet value)? newWallet,
     TResult? Function(WalletSetupType_Mnemonic value)? mnemonic,
+    TResult? Function(WalletSetupType_Descriptor value)? descriptor,
     TResult? Function(WalletSetupType_Full value)? full,
     TResult? Function(WalletSetupType_WatchOnly value)? watchOnly,
   }) {
@@ -342,6 +359,7 @@ class _$WalletSetupType_MnemonicImpl extends WalletSetupType_Mnemonic {
   TResult maybeMap<TResult extends Object?>({
     TResult Function(WalletSetupType_NewWallet value)? newWallet,
     TResult Function(WalletSetupType_Mnemonic value)? mnemonic,
+    TResult Function(WalletSetupType_Descriptor value)? descriptor,
     TResult Function(WalletSetupType_Full value)? full,
     TResult Function(WalletSetupType_WatchOnly value)? watchOnly,
     required TResult orElse(),
@@ -364,6 +382,170 @@ abstract class WalletSetupType_Mnemonic extends WalletSetupType {
   /// with the given fields replaced by the non-null parameter values.
   @JsonKey(includeFromJson: false, includeToJson: false)
   _$$WalletSetupType_MnemonicImplCopyWith<_$WalletSetupType_MnemonicImpl>
+      get copyWith => throw _privateConstructorUsedError;
+}
+
+/// @nodoc
+abstract class _$$WalletSetupType_DescriptorImplCopyWith<$Res> {
+  factory _$$WalletSetupType_DescriptorImplCopyWith(
+          _$WalletSetupType_DescriptorImpl value,
+          $Res Function(_$WalletSetupType_DescriptorImpl) then) =
+      __$$WalletSetupType_DescriptorImplCopyWithImpl<$Res>;
+  @useResult
+  $Res call({String field0});
+}
+
+/// @nodoc
+class __$$WalletSetupType_DescriptorImplCopyWithImpl<$Res>
+    extends _$WalletSetupTypeCopyWithImpl<$Res,
+        _$WalletSetupType_DescriptorImpl>
+    implements _$$WalletSetupType_DescriptorImplCopyWith<$Res> {
+  __$$WalletSetupType_DescriptorImplCopyWithImpl(
+      _$WalletSetupType_DescriptorImpl _value,
+      $Res Function(_$WalletSetupType_DescriptorImpl) _then)
+      : super(_value, _then);
+
+  /// Create a copy of WalletSetupType
+  /// with the given fields replaced by the non-null parameter values.
+  @pragma('vm:prefer-inline')
+  @override
+  $Res call({
+    Object? field0 = null,
+  }) {
+    return _then(_$WalletSetupType_DescriptorImpl(
+      null == field0
+          ? _value.field0
+          : field0 // ignore: cast_nullable_to_non_nullable
+              as String,
+    ));
+  }
+}
+
+/// @nodoc
+
+class _$WalletSetupType_DescriptorImpl extends WalletSetupType_Descriptor {
+  const _$WalletSetupType_DescriptorImpl(this.field0) : super._();
+
+  @override
+  final String field0;
+
+  @override
+  String toString() {
+    return 'WalletSetupType.descriptor(field0: $field0)';
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return identical(this, other) ||
+        (other.runtimeType == runtimeType &&
+            other is _$WalletSetupType_DescriptorImpl &&
+            (identical(other.field0, field0) || other.field0 == field0));
+  }
+
+  @override
+  int get hashCode => Object.hash(runtimeType, field0);
+
+  /// Create a copy of WalletSetupType
+  /// with the given fields replaced by the non-null parameter values.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  @pragma('vm:prefer-inline')
+  _$$WalletSetupType_DescriptorImplCopyWith<_$WalletSetupType_DescriptorImpl>
+      get copyWith => __$$WalletSetupType_DescriptorImplCopyWithImpl<
+          _$WalletSetupType_DescriptorImpl>(this, _$identity);
+
+  @override
+  @optionalTypeArgs
+  TResult when<TResult extends Object?>({
+    required TResult Function() newWallet,
+    required TResult Function(String field0) mnemonic,
+    required TResult Function(String field0) descriptor,
+    required TResult Function(String field0, String field1) full,
+    required TResult Function(String field0, String field1) watchOnly,
+  }) {
+    return descriptor(field0);
+  }
+
+  @override
+  @optionalTypeArgs
+  TResult? whenOrNull<TResult extends Object?>({
+    TResult? Function()? newWallet,
+    TResult? Function(String field0)? mnemonic,
+    TResult? Function(String field0)? descriptor,
+    TResult? Function(String field0, String field1)? full,
+    TResult? Function(String field0, String field1)? watchOnly,
+  }) {
+    return descriptor?.call(field0);
+  }
+
+  @override
+  @optionalTypeArgs
+  TResult maybeWhen<TResult extends Object?>({
+    TResult Function()? newWallet,
+    TResult Function(String field0)? mnemonic,
+    TResult Function(String field0)? descriptor,
+    TResult Function(String field0, String field1)? full,
+    TResult Function(String field0, String field1)? watchOnly,
+    required TResult orElse(),
+  }) {
+    if (descriptor != null) {
+      return descriptor(field0);
+    }
+    return orElse();
+  }
+
+  @override
+  @optionalTypeArgs
+  TResult map<TResult extends Object?>({
+    required TResult Function(WalletSetupType_NewWallet value) newWallet,
+    required TResult Function(WalletSetupType_Mnemonic value) mnemonic,
+    required TResult Function(WalletSetupType_Descriptor value) descriptor,
+    required TResult Function(WalletSetupType_Full value) full,
+    required TResult Function(WalletSetupType_WatchOnly value) watchOnly,
+  }) {
+    return descriptor(this);
+  }
+
+  @override
+  @optionalTypeArgs
+  TResult? mapOrNull<TResult extends Object?>({
+    TResult? Function(WalletSetupType_NewWallet value)? newWallet,
+    TResult? Function(WalletSetupType_Mnemonic value)? mnemonic,
+    TResult? Function(WalletSetupType_Descriptor value)? descriptor,
+    TResult? Function(WalletSetupType_Full value)? full,
+    TResult? Function(WalletSetupType_WatchOnly value)? watchOnly,
+  }) {
+    return descriptor?.call(this);
+  }
+
+  @override
+  @optionalTypeArgs
+  TResult maybeMap<TResult extends Object?>({
+    TResult Function(WalletSetupType_NewWallet value)? newWallet,
+    TResult Function(WalletSetupType_Mnemonic value)? mnemonic,
+    TResult Function(WalletSetupType_Descriptor value)? descriptor,
+    TResult Function(WalletSetupType_Full value)? full,
+    TResult Function(WalletSetupType_WatchOnly value)? watchOnly,
+    required TResult orElse(),
+  }) {
+    if (descriptor != null) {
+      return descriptor(this);
+    }
+    return orElse();
+  }
+}
+
+abstract class WalletSetupType_Descriptor extends WalletSetupType {
+  const factory WalletSetupType_Descriptor(final String field0) =
+      _$WalletSetupType_DescriptorImpl;
+  const WalletSetupType_Descriptor._() : super._();
+
+  String get field0;
+
+  /// Create a copy of WalletSetupType
+  /// with the given fields replaced by the non-null parameter values.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  _$$WalletSetupType_DescriptorImplCopyWith<_$WalletSetupType_DescriptorImpl>
       get copyWith => throw _privateConstructorUsedError;
 }
 
@@ -447,6 +629,7 @@ class _$WalletSetupType_FullImpl extends WalletSetupType_Full {
   TResult when<TResult extends Object?>({
     required TResult Function() newWallet,
     required TResult Function(String field0) mnemonic,
+    required TResult Function(String field0) descriptor,
     required TResult Function(String field0, String field1) full,
     required TResult Function(String field0, String field1) watchOnly,
   }) {
@@ -458,6 +641,7 @@ class _$WalletSetupType_FullImpl extends WalletSetupType_Full {
   TResult? whenOrNull<TResult extends Object?>({
     TResult? Function()? newWallet,
     TResult? Function(String field0)? mnemonic,
+    TResult? Function(String field0)? descriptor,
     TResult? Function(String field0, String field1)? full,
     TResult? Function(String field0, String field1)? watchOnly,
   }) {
@@ -469,6 +653,7 @@ class _$WalletSetupType_FullImpl extends WalletSetupType_Full {
   TResult maybeWhen<TResult extends Object?>({
     TResult Function()? newWallet,
     TResult Function(String field0)? mnemonic,
+    TResult Function(String field0)? descriptor,
     TResult Function(String field0, String field1)? full,
     TResult Function(String field0, String field1)? watchOnly,
     required TResult orElse(),
@@ -484,6 +669,7 @@ class _$WalletSetupType_FullImpl extends WalletSetupType_Full {
   TResult map<TResult extends Object?>({
     required TResult Function(WalletSetupType_NewWallet value) newWallet,
     required TResult Function(WalletSetupType_Mnemonic value) mnemonic,
+    required TResult Function(WalletSetupType_Descriptor value) descriptor,
     required TResult Function(WalletSetupType_Full value) full,
     required TResult Function(WalletSetupType_WatchOnly value) watchOnly,
   }) {
@@ -495,6 +681,7 @@ class _$WalletSetupType_FullImpl extends WalletSetupType_Full {
   TResult? mapOrNull<TResult extends Object?>({
     TResult? Function(WalletSetupType_NewWallet value)? newWallet,
     TResult? Function(WalletSetupType_Mnemonic value)? mnemonic,
+    TResult? Function(WalletSetupType_Descriptor value)? descriptor,
     TResult? Function(WalletSetupType_Full value)? full,
     TResult? Function(WalletSetupType_WatchOnly value)? watchOnly,
   }) {
@@ -506,6 +693,7 @@ class _$WalletSetupType_FullImpl extends WalletSetupType_Full {
   TResult maybeMap<TResult extends Object?>({
     TResult Function(WalletSetupType_NewWallet value)? newWallet,
     TResult Function(WalletSetupType_Mnemonic value)? mnemonic,
+    TResult Function(WalletSetupType_Descriptor value)? descriptor,
     TResult Function(WalletSetupType_Full value)? full,
     TResult Function(WalletSetupType_WatchOnly value)? watchOnly,
     required TResult orElse(),
@@ -613,6 +801,7 @@ class _$WalletSetupType_WatchOnlyImpl extends WalletSetupType_WatchOnly {
   TResult when<TResult extends Object?>({
     required TResult Function() newWallet,
     required TResult Function(String field0) mnemonic,
+    required TResult Function(String field0) descriptor,
     required TResult Function(String field0, String field1) full,
     required TResult Function(String field0, String field1) watchOnly,
   }) {
@@ -624,6 +813,7 @@ class _$WalletSetupType_WatchOnlyImpl extends WalletSetupType_WatchOnly {
   TResult? whenOrNull<TResult extends Object?>({
     TResult? Function()? newWallet,
     TResult? Function(String field0)? mnemonic,
+    TResult? Function(String field0)? descriptor,
     TResult? Function(String field0, String field1)? full,
     TResult? Function(String field0, String field1)? watchOnly,
   }) {
@@ -635,6 +825,7 @@ class _$WalletSetupType_WatchOnlyImpl extends WalletSetupType_WatchOnly {
   TResult maybeWhen<TResult extends Object?>({
     TResult Function()? newWallet,
     TResult Function(String field0)? mnemonic,
+    TResult Function(String field0)? descriptor,
     TResult Function(String field0, String field1)? full,
     TResult Function(String field0, String field1)? watchOnly,
     required TResult orElse(),
@@ -650,6 +841,7 @@ class _$WalletSetupType_WatchOnlyImpl extends WalletSetupType_WatchOnly {
   TResult map<TResult extends Object?>({
     required TResult Function(WalletSetupType_NewWallet value) newWallet,
     required TResult Function(WalletSetupType_Mnemonic value) mnemonic,
+    required TResult Function(WalletSetupType_Descriptor value) descriptor,
     required TResult Function(WalletSetupType_Full value) full,
     required TResult Function(WalletSetupType_WatchOnly value) watchOnly,
   }) {
@@ -661,6 +853,7 @@ class _$WalletSetupType_WatchOnlyImpl extends WalletSetupType_WatchOnly {
   TResult? mapOrNull<TResult extends Object?>({
     TResult? Function(WalletSetupType_NewWallet value)? newWallet,
     TResult? Function(WalletSetupType_Mnemonic value)? mnemonic,
+    TResult? Function(WalletSetupType_Descriptor value)? descriptor,
     TResult? Function(WalletSetupType_Full value)? full,
     TResult? Function(WalletSetupType_WatchOnly value)? watchOnly,
   }) {
@@ -672,6 +865,7 @@ class _$WalletSetupType_WatchOnlyImpl extends WalletSetupType_WatchOnly {
   TResult maybeMap<TResult extends Object?>({
     TResult Function(WalletSetupType_NewWallet value)? newWallet,
     TResult Function(WalletSetupType_Mnemonic value)? mnemonic,
+    TResult Function(WalletSetupType_Descriptor value)? descriptor,
     TResult Function(WalletSetupType_Full value)? full,
     TResult Function(WalletSetupType_WatchOnly value)? watchOnly,
     required TResult orElse(),
