@@ -1,12 +1,17 @@
-import 'package:danawallet/services/frigate_url_probe.dart';
 import 'package:danawallet/services/frigate_warning_gate.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
 
-/// B5.2 (default private, public opt-in), B5.3 (blocking one-time warning
-/// before the first public sync), B5.4 (fires exactly once per wallet, on a
-/// REACHABLE public URL — an unreachable URL never fires it).
+/// B5.2-B5.4 (owner ruling R12, 2026-11-18): the public warning is a
+/// SAVE-TIME gate — the declaration screen probes, warns, and only commits
+/// on acknowledgement. The subscription-start gate exists ONLY as the
+/// migration path for pre-ruling installs (a public unacked URL saved under
+/// the old semantics still fires the warning at subscription start, B2.2).
+///
+/// The save path is probe-gated, so the gate no longer probes at start and
+/// the `unreachable` decision is gone (J3): an unreachable public URL can
+/// never exist in settings anymore.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -18,65 +23,38 @@ void main() {
         InMemorySharedPreferencesAsync.empty();
   });
 
-  group('FrigateWarningGate (B5.2-B5.4)', () {
-    test('no URL configured: proceed without probing', () async {
-      var probeCalls = 0;
+  group('FrigateWarningGate (B5.2-B5.4, R12 semantics)', () {
+    test('no URL configured: proceed', () async {
+      var warningCalls = 0;
       final gate = FrigateWarningGate(
         getUrl: () async => null,
-        probe: (url) async => probeCalls++,
+        onWarningRequired: () => warningCalls++,
       );
 
       expect(await gate.evaluate(), FrigateGateDecision.proceed);
-      expect(probeCalls, 0);
+      expect(warningCalls, 0);
     });
 
-    test('private declaration (B5.2 default): proceed, probe never called',
-        () async {
-      var probeCalls = 0;
+    test('private declaration (B5.2 default): proceed', () async {
       var warningCalls = 0;
       final gate = FrigateWarningGate(
         getUrl: () async => 'frigate.lan:50002',
         isPublic: () async => false,
         isAcked: () async => false,
-        probe: (url) async => probeCalls++,
         onWarningRequired: () => warningCalls++,
       );
 
       expect(await gate.evaluate(), FrigateGateDecision.proceed);
-      expect(probeCalls, 0, reason: 'a private sync needs no warning gate');
-      expect(warningCalls, 0);
+      expect(warningCalls, 0, reason: 'a private sync needs no warning gate');
     });
 
-    test('public, unacked, unreachable URL: no warning fired (B5.4)',
-        () async {
-      var warningCalls = 0;
-      var probeCalls = 0;
-      final gate = FrigateWarningGate(
-        getUrl: () async => 'down.lan:50002',
-        isPublic: () async => true,
-        isAcked: () async => false,
-        probe: (url) async {
-          probeCalls++;
-          throw const FrigateProbeUnreachable('can\'t connect');
-        },
-        onWarningRequired: () => warningCalls++,
-      );
-
-      expect(await gate.evaluate(), FrigateGateDecision.unreachable);
-      expect(probeCalls, 1);
-      expect(warningCalls, 0,
-          reason: 'an unreachable URL never fires the warning (B5.4) — '
-              'the harm happens at first successful use');
-    });
-
-    test('public, unacked, reachable: warning fires exactly once, held',
+    test('public, unacked (pre-ruling state): warning fires once, held',
         () async {
       var warningCalls = 0;
       final gate = FrigateWarningGate(
         getUrl: () async => 'frigate.lan:50002',
         isPublic: () async => true,
         isAcked: () async => false,
-        probe: (url) async {},
         onWarningRequired: () => warningCalls++,
       );
 
@@ -92,19 +70,17 @@ void main() {
     test('public, already acked: proceed, no warning (B5.4 never again)',
         () async {
       var warningCalls = 0;
-      var probeCalls = 0;
       final gate = FrigateWarningGate(
         getUrl: () async => 'other.frigate.lan:50002',
         isPublic: () async => true,
         isAcked: () async => true,
-        probe: (url) async => probeCalls++,
         onWarningRequired: () => warningCalls++,
       );
 
       expect(await gate.evaluate(), FrigateGateDecision.proceed);
-      expect(warningCalls, 0);
-      expect(probeCalls, 0,
-          reason: 'an acked wallet needs no further gating or probing');
+      expect(warningCalls, 0,
+          reason: 'an acked wallet needs no further gating (J1: per wallet '
+              'across all URLs)');
     });
 
     test('after the ack lands, the gate resets and proceeds', () async {
@@ -114,7 +90,6 @@ void main() {
         getUrl: () async => 'frigate.lan:50002',
         isPublic: () async => true,
         isAcked: () async => acked,
-        probe: (url) async {},
         onWarningRequired: () => warningCalls++,
       );
 
