@@ -83,7 +83,9 @@ abstract class SpWallet implements RustOpaqueInterface {
 
   /// Signs a nameserver registration challenge attestation with the
   /// wallet's own spend secret (BIP-340 schnorr, SHA-256-prehashed,
-  /// `CHALLENGE_PREFIX` enforced inside the shared core). The secret
+  /// spec v1 grammar enforced inside the shared core, and the message
+  /// network_key cross-checked against this wallet's pinned per-network
+  /// constant (D7) before anything is signed). The secret
   /// never crosses the FFI boundary: Dart passes the message string in
   /// and receives only the 64-byte signature hex.
   ///
@@ -92,9 +94,9 @@ abstract class SpWallet implements RustOpaqueInterface {
   /// spdk-wallet/src/client/client.rs:71) — it clones the held key and
   /// errors on watch-only (`SpendKey::Public`) wallets, so the
   /// base64/hex re-import fallback via `ApiSpendKey::encode` was not
-  /// needed. Shares the exact `challenge::sign_challenge_inner` core the
-  /// standalone `sign_challenge` oracle uses (byte-identical output by
-  /// construction).
+  /// Signs through the shared `challenge::sign_challenge_inner` core with
+  /// fresh per-call BIP-340 auxiliary random data (D9: uniform random,
+  /// constant zero-array fallback when no RNG is available).
   String signRegistrationChallenge({required String message});
 
   String signTransaction(

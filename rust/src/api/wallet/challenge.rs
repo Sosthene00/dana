@@ -1,10 +1,8 @@
 use anyhow::{anyhow, Result};
-use flutter_rust_bridge::frb;
 use spdk_wallet::bitcoin::hashes::{sha256, Hash};
 use spdk_wallet::bitcoin::secp256k1::{self, Keypair, Message, SecretKey};
-use std::str::FromStr;
 
-/// All challenge messages signed by this oracle must carry this prefix as
+/// All challenge messages signed by the wallet-held signer must carry this prefix as
 /// their first colon-separated field. The nameserver (Sosthene00/
 /// dana-nameserver issue #20) only ever accepts attestations over messages
 /// beginning with it; refusing anything else keeps this from turning into an
@@ -148,56 +146,58 @@ pub(crate) fn is_valid_user_name(user_name: &str) -> bool {
             .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-'))
 }
 
-/// Lowercase hex of a serialized byte array.
-fn to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
-}
-
 /// The SHA-256 digest the nameserver expects under a BIP-340 `Message`
 /// (README @ fe1c49d defines this pre-hash contract).
 fn challenge_digest(message: &str) -> [u8; 32] {
     sha256::Hash::hash(message.as_bytes()).to_byte_array()
 }
 
-/// Signs a nameserver challenge attestation with the spend key (BIP-340
-/// schnorr).
-///
-/// The message must match the spec section 3 v1 byte-level grammar
-/// ([`split_v1`]) — the Rust core is the authority on what may be signed —
-/// and is pre-hashed with SHA-256: the *digest*, never the raw preimage, is
-/// what goes into the BIP-340 `Message` (see
-/// `raw_preimage_signature_does_not_verify`, which locks that contract with
-/// the nameserver). Returns the 64-byte signature as lowercase hex.
-///
-/// The spend secret crosses the FFI boundary as hex here on purpose: this is
-/// a pure signing oracle (message string in, signature string out) and needs
-/// no wallet state. We deliberately do *not* reuse `ApiSpendKey` for the
-/// secret: the established FRB key pattern (`ApiScanKey`/`ApiSpendKey`,
-/// wallet.rs:46) is a JSON-encoded wallet handle passed by value through
-/// `encode`/`decode`, which does not fit a stateless string-in/string-out
-/// oracle call.
-#[frb(sync)]
-pub fn sign_challenge(spend_secret: &str, message: &str) -> Result<String> {
-    let sk = SecretKey::from_str(spend_secret)?;
-    Ok(to_hex(&sign_challenge_inner(&sk, message)?.serialize()))
+/// D9: the BIP-340 auxiliary random data fallback — the constant 32-byte
+/// zero array, used verbatim when the signing environment has no RNG and
+/// pinned by tests so fixed vectors stay byte-for-byte reproducible.
+pub(crate) const ZERO_AUX: [u8; 32] = [0u8; 32];
+
+/// D9: fresh uniform-random 32 bytes of auxiliary data per signing call.
+/// Falls back to the constant 32-byte zero array ([`ZERO_AUX`]) when no RNG
+/// is available. The aux source is injectable — [`sign_challenge_inner`]
+/// takes the aux bytes — so tests pin a constant and stay reproducible.
+pub(crate) fn fresh_aux_rand() -> [u8; 32] {
+    use rand::{rngs::OsRng, TryRngCore};
+    aux_rand_from(|buf| {
+        OsRng.try_fill_bytes(buf)
+            .map_err(|e| std::io::Error::other(format!("no RNG available: {e}")))
+    })
 }
 
-/// Core of [`sign_challenge`], factored out so tests can assert the digest
-/// path directly against raw-preimage signatures. Enforces the full spec v1
-/// grammar before any signing happens.
+/// Seam for [`fresh_aux_rand`]: fills the buffer from the injected source;
+/// any failure yields the constant zero array (D9 fallback). The failure
+/// branch of the injected source lets tests cover the fallback directly.
+pub(crate) fn aux_rand_from(fill: impl FnOnce(&mut [u8; 32]) -> std::io::Result<()>) -> [u8; 32] {
+    let mut aux = ZERO_AUX;
+    if fill(&mut aux).is_err() {
+        aux = ZERO_AUX;
+    }
+    aux
+}
+
+/// The single signing core: enforces the full spec v1 grammar (D5/D7/D8)
+/// before anything is signed and pre-hashes the message with SHA-256 — the
+/// digest, never the raw preimage, goes into the BIP-340 `Message` (see
+/// `raw_preimage_signature_does_not_verify`, which locks that contract with
+/// the nameserver). `aux_rand` is injected (D9): the wallet-held call site
+/// ([`super::SpWallet::sign_registration_challenge`]) passes
+/// [`fresh_aux_rand`]; tests pin a constant for byte-for-byte reproducibility.
 pub(crate) fn sign_challenge_inner(
     sk: &SecretKey,
     message: &str,
+    aux_rand: &[u8; 32],
 ) -> Result<secp256k1::schnorr::Signature> {
     validate_challenge_grammar(message)?;
 
     let secp = secp256k1::Secp256k1::signing_only();
     let keypair = Keypair::from_secret_key(&secp, sk);
     let msg = Message::from_digest(challenge_digest(message));
-    // Deterministic BIP-340 auxiliary random data: sha256(secret). No caller
-    // nonce to misuse, and the nameserver only verifies the final signature.
-    let aux = sha256::Hash::hash(&sk.secret_bytes()).to_byte_array();
-    Ok(secp.sign_schnorr_with_aux_rand(&msg, &keypair, &aux))
+    Ok(secp.sign_schnorr_with_aux_rand(&msg, &keypair, aux_rand))
 }
 
 #[cfg(test)]
@@ -205,6 +205,21 @@ mod tests {
     use super::*;
     use spdk_wallet::bitcoin::secp256k1::schnorr::Signature;
     use spdk_wallet::bitcoin::secp256k1::{Secp256k1, XOnlyPublicKey};
+    use std::str::FromStr;
+
+    /// Test-only stand-in for the hex-secret signing oracle removed from the
+    /// release FFI surface (D4, INV-3): signs through the shared
+    /// `sign_challenge_inner` core with the pinned D9 aux (the zero array) so
+    /// every pre-existing assertion keeps its exact meaning.
+    fn sign_challenge(spend_secret: &str, message: &str) -> Result<String> {
+        let sk = SecretKey::from_str(spend_secret)?;
+        let sig = sign_challenge_inner(&sk, message, &ZERO_AUX)?;
+        Ok(sig
+            .serialize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect())
+    }
 
     /// Fixed spend secret (sk = 1) so the produced signature is a
     const SK_HEX: &str = "0000000000000000000000000000000000000000000000000000000000000001";
@@ -297,7 +312,7 @@ mod tests {
 
         // ... and the wallet-produced signature *does* verify against the
         // digest — so the mismatch above is about the pre-hash, not a key bug.
-        let wallet_sig = sign_challenge_inner(&sk, MSG).unwrap();
+        let wallet_sig = sign_challenge_inner(&sk, MSG, &ZERO_AUX).unwrap();
         verify(&wallet_sig, &digest_msg, &sk)
             .expect("wallet signature verifies against the digest path");
     }
@@ -470,15 +485,15 @@ mod tests {
     }
 
     /// The wallet-held signer (`SpWallet::sign_registration_challenge`,
-    /// wallet.rs) and the standalone oracle `sign_challenge` must be
-    /// byte-identical: both are thin calls into the shared
-    /// `sign_challenge_inner` core with the same `SecretKey` and message.
-    /// `SpClient::new` is a pure local key-derivation constructor (no
-    /// network I/O — pinned spdk c1262f0 client.rs:24-49), so the real
-    /// call site is exercised directly; testing only the shared core was
-    /// not needed.
+    /// wallet.rs) is the ONLY signing entry point on the FFI surface
+    /// (D4, INV-3 — the standalone hex-secret oracle was removed). It runs
+    /// the same `sign_challenge_inner` core with fresh per-call D9 aux, so
+    /// its output must still be a valid 64-byte schnorr signature over the
+    /// digest path with the wallet's own key. `SpClient::new` is a pure
+    /// local key-derivation constructor (no network I/O), so the real call
+    /// site is exercised directly.
     #[test]
-    fn wallet_call_site_is_byte_identical_to_oracle() {
+    fn wallet_held_signer_output_verifies() {
         use crate::api::structs::network::Network;
         use crate::api::wallet::{ApiScanKey, ApiSpendKey, SpWallet};
         use spdk_wallet::client::SpendKey;
@@ -493,10 +508,13 @@ mod tests {
         )
         .unwrap();
 
-        let via_wallet = wallet.sign_registration_challenge(MSG.into()).unwrap();
-        let via_oracle = sign_challenge(SK_HEX, MSG).unwrap();
-        assert_eq!(via_wallet, via_oracle);
-        assert_eq!(via_wallet.len(), 128); // 64-byte schnorr sig, lowercase hex
+        let sig_hex = wallet.sign_registration_challenge(MSG.into()).unwrap();
+        assert_eq!(sig_hex.len(), 128); // 64-byte schnorr sig, lowercase hex
+        let bytes = from_hex(&sig_hex).expect("output is even-length lowercase hex");
+        let sig = Signature::from_slice(&bytes)
+            .expect("output must be a canonical 64-byte schnorr signature");
+        verify(&sig, &Message::from_digest(challenge_digest(MSG)), &sk)
+            .expect("wallet-held signer output verifies against the digest path");
     }
 
     #[test]
@@ -552,5 +570,74 @@ mod tests {
             .sign_registration_challenge(testnet_msg)
             .unwrap_err();
         assert!(err.to_string().contains("regtest"), "error: {err}");
+    }
+
+    /// D9 acceptance: the constant (zero-array) aux reproduces the fixed
+    /// vectors byte-for-byte — (sk, message, aux) fully determines the
+    /// BIP-340 signature, and this exact triple is locked here.
+    #[test]
+    fn constant_aux_reproduces_fixed_vectors_byte_for_byte() {
+        const EXPECTED_SIG_HEX: &str = "df6217f62540ad76c6f42d2a4a0198d4f5f627daa99033b1bf18dda29071d5ffbc94b732d336598645d7e857fd6c94a1ee1dc616d97d766ef3872460a195ade2";
+        let first = sign_challenge(SK_HEX, MSG).unwrap();
+        let second = sign_challenge(SK_HEX, MSG).unwrap();
+        assert_eq!(first, second, "pinned aux must be reproducible");
+        assert_eq!(first, EXPECTED_SIG_HEX);
+    }
+
+    /// D9 acceptance: the default path uses fresh randomness — two signing
+    /// calls over the same message yield different signatures.
+    #[test]
+    fn default_path_uses_fresh_randomness_per_call() {
+        let sk = SecretKey::from_str(SK_HEX).unwrap();
+        let s1 = sign_challenge_inner(&sk, MSG, &fresh_aux_rand()).unwrap();
+        let s2 = sign_challenge_inner(&sk, MSG, &fresh_aux_rand()).unwrap();
+        assert_ne!(
+            s1.serialize(),
+            s2.serialize(),
+            "fresh aux per call must not repeat signatures"
+        );
+        let digest_msg = Message::from_digest(challenge_digest(MSG));
+        verify(&s1, &digest_msg, &sk).unwrap();
+        verify(&s2, &digest_msg, &sk).unwrap();
+    }
+
+    /// D9 acceptance: the no-RNG fallback path is covered — a failing aux
+    /// source yields the constant 32-byte zero array, never a panic.
+    #[test]
+    fn no_rng_fallback_yields_zero_aux() {
+        let aux = aux_rand_from(|_buf| Err(std::io::Error::other("no rng")));
+        assert_eq!(aux, ZERO_AUX);
+        // A working source is passed through untouched.
+        let aux = aux_rand_from(|buf| {
+            buf.fill(0xAB);
+            Ok(())
+        });
+        assert_eq!(aux, [0xAB; 32]);
+    }
+
+    /// D4/INV-3 acceptance: a watch-only wallet (public-only spend key) has
+    /// no spend secret; the signing call must error clearly instead of
+    /// succeeding silently.
+    #[test]
+    fn watch_only_wallet_signing_fails_closed() {
+        use crate::api::structs::network::Network;
+        use crate::api::wallet::{ApiScanKey, ApiSpendKey, SpWallet};
+        use spdk_wallet::client::SpendKey;
+
+        let sk = SecretKey::from_str(SK_HEX).unwrap();
+        let pk = sk.public_key(&Secp256k1::signing_only());
+        let wallet = SpWallet::new(
+            ApiScanKey(sk),
+            ApiSpendKey(SpendKey::Public(pk)),
+            Network::Testnet3,
+        )
+        .unwrap();
+        let err = wallet
+            .sign_registration_challenge(MSG.into())
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("watch-only"),
+            "error must name the watch-only condition: {err}"
+        );
     }
 }

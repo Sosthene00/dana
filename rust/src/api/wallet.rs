@@ -56,9 +56,9 @@ impl SpWallet {
     /// spdk-wallet/src/client/client.rs:71) — it clones the held key and
     /// errors on watch-only (`SpendKey::Public`) wallets, so the
     /// base64/hex re-import fallback via `ApiSpendKey::encode` was not
-    /// needed. Shares the exact `challenge::sign_challenge_inner` core the
-    /// standalone `sign_challenge` oracle uses (byte-identical output by
-    /// construction).
+    /// Signs through the shared `challenge::sign_challenge_inner` core with
+    /// fresh per-call BIP-340 auxiliary random data (D9: uniform random,
+    /// constant zero-array fallback when no RNG is available).
     #[frb(sync)]
     pub fn sign_registration_challenge(&self, message: String) -> Result<String> {
         // Grammar first (spec section 3): a message outside the v1 grammar
@@ -82,8 +82,17 @@ impl SpWallet {
                  '{expected}'; refusing to sign (D7)"
             ));
         }
-        let sk = self.client.try_secret_spend_key()?;
-        let sig = challenge::sign_challenge_inner(&sk, &message)?;
+        // INV-3/D4: this is the only signing entry point on the FFI
+        // surface. A watch-only wallet has no spend secret and must error
+        // clearly, never succeed silently.
+        let sk = self.client.try_secret_spend_key().map_err(|_| {
+            anyhow!(
+                "watch-only wallet has no spend secret; refusing to sign the registration challenge"
+            )
+        })?;
+        // D9: fresh uniform-random aux per signing call (zero-array fallback
+        // when no RNG is available).
+        let sig = challenge::sign_challenge_inner(&sk, &message, &challenge::fresh_aux_rand())?;
         Ok(sig.serialize().iter().map(|b| format!("{b:02x}")).collect())
     }
 }

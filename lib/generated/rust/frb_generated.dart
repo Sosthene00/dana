@@ -19,7 +19,6 @@ import 'api/structs/silent_payment_code.dart';
 import 'api/structs/state_update.dart';
 import 'api/structs/unsigned_transaction.dart';
 import 'api/wallet.dart';
-import 'api/wallet/challenge.dart';
 import 'api/wallet/coin_selection.dart';
 import 'api/wallet/setup.dart';
 import 'dart:async';
@@ -90,7 +89,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -497555676;
+  int get rustContentHash => -346434904;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -313,9 +312,6 @@ abstract class RustLibApi extends BaseApi {
       {required List<OwnedOutput> ownedOutputs,
       required Recipient recipient,
       required double feerate});
-
-  String crateApiWalletChallengeSignChallenge(
-      {required String spendSecret, required String message});
 
   RustArcIncrementStrongCountFnType
       get rust_arc_increment_strong_count_ApiScanKey;
@@ -2323,32 +2319,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(
         debugName: "select_utxos_to_spend",
         argNames: ["ownedOutputs", "recipient", "feerate"],
-      );
-
-  @override
-  String crateApiWalletChallengeSignChallenge(
-      {required String spendSecret, required String message}) {
-    return handler.executeSync(SyncTask(
-      callFfi: () {
-        final serializer = SseSerializer(generalizedFrbRustBinding);
-        sse_encode_String(spendSecret, serializer);
-        sse_encode_String(message, serializer);
-        return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 70)!;
-      },
-      codec: SseCodec(
-        decodeSuccessData: sse_decode_String,
-        decodeErrorData: sse_decode_AnyhowException,
-      ),
-      constMeta: kCrateApiWalletChallengeSignChallengeConstMeta,
-      argValues: [spendSecret, message],
-      apiImpl: this,
-    ));
-  }
-
-  TaskConstMeta get kCrateApiWalletChallengeSignChallengeConstMeta =>
-      const TaskConstMeta(
-        debugName: "sign_challenge",
-        argNames: ["spendSecret", "message"],
       );
 
   RustArcIncrementStrongCountFnType
@@ -4787,7 +4757,9 @@ class SpWalletImpl extends RustOpaque implements SpWallet {
 
   /// Signs a nameserver registration challenge attestation with the
   /// wallet's own spend secret (BIP-340 schnorr, SHA-256-prehashed,
-  /// `CHALLENGE_PREFIX` enforced inside the shared core). The secret
+  /// spec v1 grammar enforced inside the shared core, and the message
+  /// network_key cross-checked against this wallet's pinned per-network
+  /// constant (D7) before anything is signed). The secret
   /// never crosses the FFI boundary: Dart passes the message string in
   /// and receives only the 64-byte signature hex.
   ///
@@ -4796,9 +4768,9 @@ class SpWalletImpl extends RustOpaque implements SpWallet {
   /// spdk-wallet/src/client/client.rs:71) — it clones the held key and
   /// errors on watch-only (`SpendKey::Public`) wallets, so the
   /// base64/hex re-import fallback via `ApiSpendKey::encode` was not
-  /// needed. Shares the exact `challenge::sign_challenge_inner` core the
-  /// standalone `sign_challenge` oracle uses (byte-identical output by
-  /// construction).
+  /// Signs through the shared `challenge::sign_challenge_inner` core with
+  /// fresh per-call BIP-340 auxiliary random data (D9: uniform random,
+  /// constant zero-array fallback when no RNG is available).
   String signRegistrationChallenge({required String message}) =>
       RustLib.instance.api.crateApiWalletSpWalletSignRegistrationChallenge(
           that: this, message: message);
