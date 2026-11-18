@@ -1,6 +1,9 @@
 # Dana Wallet — Frigate Backend Behavior Specification
 
-**Status: v1.1 (2026-11-18) — OWNER RULING R12: the public warning gates the SAVE (no-save on
+**Status: v1.2 (2026-11-18) — OWNER RULING R11: saving a frigate backend starts the subscription
+immediately — no app restart (B5.2 amended; verbatim ruling: "modifying the settings to a frigate
+backend should trigger the subscription immediately, without having to restart the app."). Earlier
+status: v1.1 (2026-11-18) — OWNER RULING R12: the public warning gates the SAVE (no-save on
 'No'), not the first sync. B5.2/B5.3/B5.4/B8.4 rewritten (verbatim ruling: "the warning window
 should be triggered by trying to save the frigate url with a 'public' setting. In case user says
 'no' the settings shouldn't be changed. That's a gate to prevent user doing something he will
@@ -190,6 +193,13 @@ branch cut from `dev`.
   Declaring PUBLIC is the warning TRIGGER: the first public save on a wallet fires the two-harms
   warning (B5.3) before the save commits. (Owner ruling R12, 2026-11-18: "the warning window
   should be triggered by trying to save the frigate url with a 'public' setting.")
+  The declaration takes effect IMMEDIATELY ON SAVE: a successful save (any declaration, private
+  or public) starts the frigate subscription in-session — the saved URL/declaration apply to the
+  subscription started by that save, without an app restart. With no wallet configured the start
+  no-ops ("frigate: no wallet, subscription not started"); writer-lease rules are untouched —
+  while the foreground service holds the lease the start stays read-only (B2.2/B2.3).
+  (Owner ruling R11, 2026-11-18: "modifying the settings to a frigate backend should trigger the
+  subscription immediately, without having to restart the app.")
 - **B5.3** The one-time public warning **gates the SAVE**: on save with declaration = public,
   the B5.1 probe runs first (failure → persistent inline error, nothing saved — unchanged);
   with the probe passed and the wallet not yet acked, the blocking two-harms warning

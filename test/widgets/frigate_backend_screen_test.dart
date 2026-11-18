@@ -1,20 +1,55 @@
 import 'package:danawallet/repositories/frigate_disclosure_repository.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
 import 'package:danawallet/screens/settings/network/frigate_backend_screen.dart';
+import 'package:danawallet/services/frigate_subscription_controller.dart';
 import 'package:danawallet/services/frigate_url_probe.dart';
+import 'package:danawallet/states/frigate_state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
 
-/// B5.1-B5.4 acceptance against the owner ruling R12 (2026-11-18): the
-/// public warning gates the SAVE, not the first sync.
-///
-/// Re-derived R10c/B8.4 acceptance: fresh install -> declare public +
-/// reachable -> warning fires AT SAVE exactly once -> "No" leaves the old
-/// settings fully intact -> "Yes" saves and writes the disclosure record at
-/// save time -> an already-acked wallet never re-fires.
+// B5.1-B5.4 acceptance against the owner ruling R12 (2026-11-18): the
+// public warning gates the SAVE, not the first sync.
+//
+// Re-derived R10c/B8.4 acceptance: fresh install -> declare public +
+// reachable -> warning fires AT SAVE exactly once -> "No" leaves the old
+// settings fully intact -> "Yes" saves and writes the disclosure record at
+// save time -> an already-acked wallet never re-fires.
+//
+// R11 (owner ruling, 2026-11-18): "modifying the settings to a frigate
+// backend should trigger the subscription immediately, without having to
+// restart the app." A SUCCESSFUL save — private or public — starts the
+// frigate subscription in-session (B5.2: the declaration takes effect
+// immediately on save, not "for the next start").
+
+/// Controller stub overriding only the lifecycle seams the screen touches
+/// (the R11 seam): start()/stop() are recorded, never run; urlAtStart/
+/// publicAtStart capture what the settings held when start() was invoked.
+class _RecordingController extends FrigateSubscriptionController {
+  _RecordingController() : super(frigateState: FrigateState());
+
+  int startCalls = 0;
+  int stopCalls = 0;
+  String? urlAtStart;
+  bool? publicAtStart;
+
+  @override
+  Future<void> stop() async {
+    stopCalls++;
+  }
+
+  @override
+  Future<bool> start() async {
+    startCalls++;
+    urlAtStart = await SettingsRepository.instance.getFrigateUrl();
+    publicAtStart = await SettingsRepository.instance.isFrigatePublic();
+    return true;
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -28,6 +63,16 @@ void main() {
   });
 
   Widget wrap(Widget child) => MaterialApp(home: Scaffold(body: child));
+
+  /// A save with an injected controller (the R11 seam): start()/stop() are
+  /// recorded, never run; [urlAtStart] captures what the settings held at
+  /// the moment start() was invoked.
+  Widget wrapWithController(Widget child,
+          {required FrigateSubscriptionController controller}) =>
+      MaterialApp(
+          home: Scaffold(
+              body: Provider<FrigateSubscriptionController>.value(
+                  value: controller, child: child)));
 
   Future<void> declarePublicAndSave(WidgetTester tester,
       {required Future<void> Function(String url) probe}) async {
@@ -148,5 +193,70 @@ void main() {
     expect(await settings.getFrigateUrl(), isNull);
     expect(await FrigateDisclosureRepository.instance.getEntries(), isEmpty);
     expect(find.byType(FrigateBackendScreen), findsOneWidget);
+  });
+
+  // --- R11: a successful save starts the subscription immediately ---
+  testWidgets(
+      'B5.2 (R11): a successful PRIVATE save starts the subscription '
+      'in-session — no app restart', (tester) async {
+    final controller = _RecordingController();
+
+    await tester.pumpWidget(wrapWithController(
+      FrigateBackendScreen(probe: (url) async {}),
+      controller: controller,
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField), 'private.lan:50002');
+    await tester.tap(find.text('Save backend'));
+    await tester.pumpAndSettle();
+
+    expect(controller.startCalls, 1,
+        reason: 'R11: the save itself triggers the subscription start');
+    expect(controller.stopCalls, 1,
+        reason: 'the previous app-side leg is torn down first so the new '
+            'URL/declaration applies');
+    expect(controller.urlAtStart, 'private.lan:50002',
+        reason: 'start() reads the freshly committed settings');
+    expect(controller.publicAtStart, isFalse);
+    expect(find.byType(FrigateBackendScreen), findsNothing,
+        reason: 'the screen pops; no restart is involved');
+  });
+
+  testWidgets(
+      'B5.2 (R11): a successful PUBLIC save (ack at save) starts the '
+      'subscription in-session — the post-ack trigger needs no restart',
+      (tester) async {
+    final controller = _RecordingController();
+
+    await tester.pumpWidget(wrapWithController(
+      FrigateBackendScreen(probe: (url) async {}),
+      controller: controller,
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField), 'public.lan:50002');
+    await tester.tap(find.text('Public'));
+    await tester.pump();
+    await tester.tap(find.text('Save backend'));
+    await tester.pumpAndSettle();
+
+    // R12's save-time warning composes with R11: the ack lands BEFORE the
+    // subscription start, so the start proceeds without a warning hold.
+    expect(find.text('Sync through a public backend?'), findsOneWidget);
+    await tester.tap(find.text('Yes — I understand, sync publicly'));
+    await tester.pumpAndSettle();
+
+    expect(controller.startCalls, 1,
+        reason: 'R11: the acked public save also starts the subscription '
+            'in-session');
+    expect(controller.urlAtStart, 'public.lan:50002');
+    expect(controller.publicAtStart, isTrue);
+    expect(
+        await FrigateDisclosureRepository.instance.isPublicWarningAcked(),
+        isTrue,
+        reason: 'the ack is persisted before the start, so the gate '
+            'proceeds instead of holding the subscription');
+    expect(find.byType(FrigateBackendScreen), findsNothing);
   });
 }

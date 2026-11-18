@@ -120,9 +120,11 @@ class _FrigateBackendScreenState extends State<FrigateBackendScreen> {
 
     if (!mounted) return;
 
-    // A changed URL or declaration takes effect on the next subscription
-    // start: stop the app-side leg so the gate re-evaluates (the service
-    // isolate re-evaluates on its own retry loop).
+    // R11 (owner ruling, 2026-11-18): the declaration takes effect
+    // IMMEDIATELY on save — a successful save stops the app-side leg and
+    // starts the subscription in-session with the freshly saved
+    // URL/declaration, no app restart (the service isolate re-evaluates on
+    // its own retry loop).
     try {
       final controller =
           Provider.of<FrigateSubscriptionController>(context, listen: false);
