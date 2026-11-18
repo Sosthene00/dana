@@ -4,7 +4,6 @@ import 'package:danawallet/generated/rust/api/stream.dart';
 import 'package:danawallet/generated/rust/api/structs/frigate_event.dart';
 import 'package:danawallet/generated/rust/api/wallet/frigate.dart'
     as frigate_api;
-import 'package:danawallet/repositories/frigate_disclosure_repository.dart';
 import 'package:danawallet/repositories/owned_outputs_repository.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
 import 'package:danawallet/repositories/wallet_repository.dart';
@@ -50,8 +49,10 @@ class FrigateSubscriptionController {
   final WriterLease? writerLease;
 
   /// B5.2-B5.4: the public-warning gate deciding whether the subscription
-  /// may start (injectable for tests; defaults to the real repositories
-  /// and the B5.1 probe).
+  /// may start. Since owner ruling R12 (2026-11-18) the warning normally
+  /// fires at SAVE time in FrigateBackendScreen; this gate remains only as
+  /// the migration path for installs whose public unacked URL predates the
+  /// ruling (injectable for tests; defaults to the real repositories).
   final FrigateWarningGate warningGate;
 
   /// Called after every processed event — the foreground-service wiring
@@ -121,18 +122,16 @@ class FrigateSubscriptionController {
         return false;
       }
 
-      // B5.2-B5.4: the one-time public warning gates the FIRST public
-      // sync. A private URL proceeds untouched (the gate probes nothing);
-      // a public unacked URL fires the blocking warning exactly once
-      // (B5.4) and holds the subscription until the user acknowledges
-      // (B5.3). An unreachable public URL never fires the warning (B5.4).
+      // B5.2-B5.4: the one-time public warning. Since ruling R12 the
+      // warning fires at SAVE time, so this gate only trips for state saved
+      // before the ruling: a public unacked URL still blocks the first
+      // public sync and fires the warning exactly once (B5.4), in both the
+      // app isolate and the foreground-service path (B2.2 snapshot flag).
+      // A private URL proceeds untouched (the gate probes nothing).
       final decision = await warningGate.evaluate();
       switch (decision) {
         case FrigateGateDecision.proceed:
           break;
-        case FrigateGateDecision.unreachable:
-          _frigateState.markUnreachable();
-          return false;
         case FrigateGateDecision.warningRequired:
         case FrigateGateDecision.warningHold:
           _frigateState.setPublicWarningPending(true);
@@ -173,13 +172,6 @@ class FrigateSubscriptionController {
       await _frigateState.refresh();
       Logger().i(
           'frigate subscription started from checkpoint height $startHeight (B1.2)');
-
-      // B5.4: this was a successful subscription start with a public
-      // declaration — log the URL permanently in the per-wallet disclosure
-      // record (deduped per URL; the record survives the wallet).
-      if (await SettingsRepository.instance.isFrigatePublic()) {
-        await FrigateDisclosureRepository.instance.recordIfNew(hostUrl);
-      }
 
       // Phase 3 (B8.2 hard gate): the electrum confirmation path runs
       // whenever the frigate path runs. No-op unless an electrum endpoint is

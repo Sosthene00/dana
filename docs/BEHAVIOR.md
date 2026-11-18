@@ -1,6 +1,13 @@
 # Dana Wallet — Frigate Backend Behavior Specification
 
-**Status: v1.0 (2026-11-14) — RATIFIED. The five drafted open-item lines (B2.7, B2.8, B3.7, B3.8, B8.5) were ruled by the owner in chat on 2026-11-14 ('Yes to all'); former [DRAFT-OWNER-REVIEW] flags stripped. Earlier status: DRAFT v0.2 (2026-11-13) — first deliverable of the spec-first restart (decision D13).
+**Status: v1.1 (2026-11-18) — OWNER RULING R12: the public warning gates the SAVE (no-save on
+'No'), not the first sync. B5.2/B5.3/B5.4/B8.4 rewritten (verbatim ruling: "the warning window
+should be triggered by trying to save the frigate url with a 'public' setting. In case user says
+'no' the settings shouldn't be changed. That's a gate to prevent user doing something he will
+regret later."). Earlier status: v1.0 (2026-11-14) — RATIFIED. The five drafted open-item lines
+(B2.7, B2.8, B3.7, B3.8, B8.5) were ruled by the owner in chat on 2026-11-14 ('Yes to all');
+former [DRAFT-OWNER-REVIEW] flags stripped. Earlier still: DRAFT v0.2 (2026-11-13) — first
+deliverable of the spec-first restart (decision D13).
 Normative basis: "Frigate Dana restart decision record (2026-11-13)" (Obsidian vault) and the
 2026-11-09 decision record it supersedes. Owner sign-off of this file is a HARD GATE: no
 implementation starts until Sosthene has approved it (decision D2). Owner corrections are
@@ -180,14 +187,27 @@ branch cut from `dev`.
   the dialog stays open with a persistent inline field error; the typed URL is preserved.
 - **B5.2** The user declares each frigate URL **public or private**; default selection is
   private. Public is always opt-in — a deliberate user act, never a default or a promotion.
-- **B5.3** The one-time public warning is **blocking**: before the first public sync proceeds,
-  the user must acknowledge the two-harms warning (historical: the scan key links outputs
-  permanently; ongoing: the operator observes every future sync live, surviving key rotation).
-  Mitigation line: "create a new wallet".
-- **B5.4** The warning fires exactly ONCE per wallet, on the first **successful** public
-  subscription (an unreachable URL does not count — the harm happens at first successful use,
-  not first attempt). It never fires again, for any URL. Each public URL + date is still
-  logged permanently in the per-wallet disclosure record.
+  Declaring PUBLIC is the warning TRIGGER: the first public save on a wallet fires the two-harms
+  warning (B5.3) before the save commits. (Owner ruling R12, 2026-11-18: "the warning window
+  should be triggered by trying to save the frigate url with a 'public' setting.")
+- **B5.3** The one-time public warning **gates the SAVE**: on save with declaration = public,
+  the B5.1 probe runs first (failure → persistent inline error, nothing saved — unchanged);
+  with the probe passed and the wallet not yet acked, the blocking two-harms warning
+  (historical: the scan key links outputs permanently; ongoing: the operator observes every
+  future sync live, surviving key rotation; mitigation line: "create a new wallet") fires
+  BEFORE the save commits. "No" aborts: the old URL/declaration/ack state is fully intact, the
+  screen stays open, nothing is persisted. (R12: "In case user says 'no' the settings shouldn't
+  be changed. That's a gate to prevent user doing something he will regret later.")
+- **B5.4** The warning fires exactly ONCE per wallet, at the first public SAVE, across all
+  URLs — an already-acked wallet saving another public URL never re-fires, and relaunching
+  never re-fires. "Yes" persists the per-wallet ack AND writes the public URL + date
+  permanently into the per-wallet disclosure record AT SAVE TIME (J2: the record timing moved
+  from first-successful-public-subscription to ack-at-save; the record survives the wallet and
+  is never cleared by resetAll). Because the save is probe-gated (B5.1), an unreachable public
+  URL can no longer exist in settings; for installs whose public unacked URL predates this
+  ruling, the warning still fires at subscription start before the first public sync (both the
+  app isolate and the foreground-service path, B2.2 snapshot flag) — that ack records the
+  pending URL at ack time.
 - **B5.5** While a custom backend URL is configured, the app talks to that endpoint only — no
   silent fallback to defaults. The chain tip comes ONLY from the selected backend's session;
   foreign tips are rejected (carried from v0.1 B5.1-B5.2).
@@ -223,8 +243,9 @@ branch cut from `dev`.
 - **B8.3** One device run of B7.2 passes: main app force-killed, payment sent during the kill
   window, wallet opened later shows the receipt confirmed — without app interaction beyond
   opening.
-- **B8.4** The one-time public warning fires on first successful public subscription and never
-  again (regtest: two public URLs, two successful syncs, exactly one ack).
+- **B8.4** The one-time public warning fires at the first public SAVE and never again —
+  exactly once per wallet, across all URLs (R12): "No" leaves the settings fully intact,
+  "Yes" saves and writes the disclosure record at save time; relaunching never re-fires.
 
 - **B8.5** Regtest acceptance script outline (drafts §9-O5; the
   execution contract for B8.1 and B8.3 on the rig of §0):
