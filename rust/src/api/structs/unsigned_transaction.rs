@@ -12,8 +12,7 @@ use spdk_wallet::{
 use crate::api::structs::amount::Amount;
 use crate::api::structs::discovered_output::DiscoveredOutput;
 use crate::api::structs::input_selection::CoinSelectionStrategy;
-use crate::api::structs::recipient::{PaymentCode, PaymentCodeKind, Recipient};
-use crate::api::structs::silent_payment_code::SilentPaymentCode;
+use crate::api::structs::recipient::Recipient;
 
 #[derive(Clone)]
 #[frb(opaque)]
@@ -133,19 +132,5 @@ impl SilentPaymentUnsignedTransaction {
             .filter(|(i, _)| self.change_index != Some(*i as u32))
             .map(|(_, r)| r.clone())
             .collect()
-    }
-}
-
-fn is_change(address: &PaymentCode, change_code: &SilentPaymentCode) -> bool {
-    address.silent_payment_code().as_ref() == Some(change_code)
-}
-
-/// Silent payment outputs other than change, plus bech32/bech32m and Base58Check.
-/// OP_RETURN is left out.
-fn is_payment_recipient(address: &PaymentCode, change_code: &SilentPaymentCode) -> bool {
-    match address.kind() {
-        Ok(PaymentCodeKind::SilentPayment) => !is_change(address, change_code),
-        Ok(PaymentCodeKind::Bech32 | PaymentCodeKind::Base58) => true,
-        Err(_) => false,
     }
 }

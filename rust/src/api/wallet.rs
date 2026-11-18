@@ -6,7 +6,7 @@ mod sync;
 mod transaction;
 
 use crate::{api::structs::network::Network, wallet::WalletFingerprint};
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use flutter_rust_bridge::frb;
 use serde::{Deserialize, Serialize};
 use spdk_wallet::bitcoin::secp256k1::SecretKey;
@@ -45,7 +45,9 @@ impl SpWallet {
 
     /// Signs a nameserver registration challenge attestation with the
     /// wallet's own spend secret (BIP-340 schnorr, SHA-256-prehashed,
-    /// `CHALLENGE_PREFIX` enforced inside the shared core). The secret
+    /// spec v1 grammar enforced inside the shared core, and the message
+    /// network_key cross-checked against this wallet's pinned per-network
+    /// constant (D7) before anything is signed). The secret
     /// never crosses the FFI boundary: Dart passes the message string in
     /// and receives only the 64-byte signature hex.
     ///
@@ -59,6 +61,27 @@ impl SpWallet {
     /// construction).
     #[frb(sync)]
     pub fn sign_registration_challenge(&self, message: String) -> Result<String> {
+        // Grammar first (spec section 3): a message outside the v1 grammar
+        // never reaches the signer. Then the per-network binding (D7): the
+        // network_key inside the message must equal this wallet's own pinned
+        // client constant - any mismatch fails closed before signing.
+        let expected = match self.client.network() {
+            spdk_wallet::bitcoin::Network::Bitcoin => challenge::NETWORK_KEY_MAINNET,
+            spdk_wallet::bitcoin::Network::Testnet
+            | spdk_wallet::bitcoin::Network::Testnet4
+            | spdk_wallet::bitcoin::Network::Signet => challenge::NETWORK_KEY_TESTNET,
+            spdk_wallet::bitcoin::Network::Regtest => {
+                return Err(anyhow!(
+                    "regtest wallets have no challenge-auth network_key constant; refusing to sign"
+                ));
+            }
+        };
+        if challenge::challenge_network_key(&message)? != expected {
+            return Err(anyhow!(
+                "challenge network_key does not match this wallet's network constant \
+                 '{expected}'; refusing to sign (D7)"
+            ));
+        }
         let sk = self.client.try_secret_spend_key()?;
         let sig = challenge::sign_challenge_inner(&sk, &message)?;
         Ok(sig.serialize().iter().map(|b| format!("{b:02x}")).collect())
