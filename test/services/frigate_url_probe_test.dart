@@ -64,6 +64,27 @@ void main() {
       );
     });
 
+    test('F-R12a: silent backend surfaces FrigateProbeUnreachable, no hang',
+        () async {
+      // Connected-but-silent socket (accepts, never replies): the save flow
+      // used to hang in "Probing backend…" forever. The probe must return to
+      // the editable screen with the inline error within the probe timeout.
+      final silent = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      silent.listen((_) {}); // swallow everything, never respond
+      addTearDown(silent.close);
+
+      final sw = Stopwatch()..start();
+      await expectLater(
+        probeFrigateUrl(
+          '127.0.0.1:${silent.port}',
+          timeout: const Duration(milliseconds: 300),
+        ),
+        throwsA(isA<FrigateProbeUnreachable>()),
+      );
+      expect(sw.elapsed, lessThan(const Duration(seconds: 5)),
+          reason: 'a stalled probe must fail fast, not hang the save');
+    }, timeout: const Timeout(Duration(seconds: 10)));
+
     test('malformed URLs fail as parse errors (B5.1)', () async {
       for (final bad in const [
         '',

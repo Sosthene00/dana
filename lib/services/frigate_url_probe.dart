@@ -44,9 +44,15 @@ Future<void> probeFrigateUrl(
         'Invalid backend URL — the port must be a number between 1 and 65535');
   }
 
+  ElectrumClient? client;
   try {
-    final client = await ElectrumClient.connect(trimmed, timeout: timeout);
-    await client.close();
+    client = await ElectrumClient.connect(trimmed, timeout: timeout);
+  } on TimeoutException {
+    // F-R12a: connected but silent (no server.version reply) — this used to
+    // hang the save forever. Surface the existing unreachable path so the
+    // save flow returns to the editable screen with the inline error.
+    throw FrigateProbeUnreachable(
+        'Backend at $trimmed did not respond within ${timeout.inSeconds}s');
   } on FrigateProbeException {
     rethrow;
   } on ArgumentError {
@@ -60,5 +66,9 @@ Future<void> probeFrigateUrl(
     // B4.4: strip the exception-class noise from user-visible errors.
     final message = text.replaceFirst(RegExp(r'^[A-Za-z0-9_.]+:\s*'), '');
     throw FrigateProbeException('Backend probe failed for $trimmed: $message');
+  } finally {
+    // Never leak the probe socket on a failure path (stalled connections
+    // included — the client tears itself down, close() is idempotent).
+    await client?.close();
   }
 }
