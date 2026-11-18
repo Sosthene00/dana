@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:danawallet/services/electrum_client.dart';
@@ -70,8 +72,7 @@ void main() {
       await client.close();
     });
 
-    test('surfaces server notifications on the notifications stream',
-        () async {
+    test('surfaces server notifications on the notifications stream', () async {
       server.handler = (method, params) {
         if (method == 'server.version') return ['MockElectrum 1.0', '1.4'];
         if (method == 'blockchain.scripthash.subscribe') return null;
@@ -93,8 +94,7 @@ void main() {
       await client.close();
     });
 
-    test('a server error response completes the call with an error',
-        () async {
+    test('a server error response completes the call with an error', () async {
       server.handler = (method, params) {
         if (method == 'server.version') return ['MockElectrum 1.0', '1.4'];
         throw Exception('boom');
@@ -108,7 +108,47 @@ void main() {
       await client.close();
     });
 
-    });
+    test('F-R12a: connect times out on a connected-but-silent socket',
+        () async {
+      // A listen-only socket: accepts and never replies (no data, no FIN) —
+      // the exact half-open shape that hung the B5.1 save forever. The
+      // handshake `server.version` must surface a catchable TimeoutException
+      // instead of hanging the caller.
+      final silent = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      silent.listen((_) {}); // swallow everything, never respond
+      addTearDown(silent.close);
+
+      await expectLater(
+        ElectrumClient.connect(
+          '127.0.0.1:${silent.port}',
+          timeout: const Duration(milliseconds: 300),
+        ),
+        throwsA(isA<TimeoutException>()),
+      );
+    }, timeout: const Timeout(Duration(seconds: 5)));
+
+    test('F-R12a: a call with no reply times out and tears down the socket',
+        () async {
+      server.silentMethods.add('blockchain.scripthash.get_history');
+      server.handler = (method, params) {
+        if (method == 'server.version') return ['MockElectrum 1.0', '1.4'];
+        throw Exception('unexpected method $method');
+      };
+
+      final client = await ElectrumClient.connect(
+        '127.0.0.1:$port',
+        timeout: const Duration(milliseconds: 300),
+      );
+
+      await expectLater(
+        client.getHistory('cafe'),
+        throwsA(isA<TimeoutException>()),
+      );
+      // The stalled connection must be torn down so the B3.7 reconnect (the
+      // confirmation-monitor path) fires instead of limping on half-open.
+      await expectLater(client.done, completes);
+    }, timeout: const Timeout(Duration(seconds: 5)));
+  });
 
   group('electrumScripthash', () {
     test('is sha256 of the script, byte-reversed, hex-encoded', () {

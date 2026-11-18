@@ -11,6 +11,10 @@ class MockElectrumServer {
   dynamic Function(String method, List<dynamic> params) handler =
       (method, params) => null;
 
+  /// Methods the server silently swallows: the request is logged but NEVER
+  /// answered (simulates a half-open/stalled connection — F-R12a).
+  final Set<String> silentMethods = {};
+
   /// Methods seen on the wire, in arrival order (across all connections).
   final List<String> requestMethods = [];
 
@@ -50,6 +54,7 @@ class MockElectrumServer {
       requestMethods.add(method);
       requestParams.add(((req['params'] as List?) ?? const []).toList());
       if (!firstRequestMethod.isCompleted) firstRequestMethod.complete(method);
+      if (silentMethods.contains(method)) return; // never answered (F-R12a)
       final params = (req['params'] as List?) ?? const [];
       final id = req['id'];
       try {

@@ -54,6 +54,12 @@ String electrumScripthash(Uint8List script) {
 class ElectrumClient {
   final String host;
   final int port;
+
+  /// Per-call reply timeout (F-R12a). The same [Duration] the caller passed
+  /// to [connect] — connect() used to apply it ONLY to the TCP handshake,
+  /// leaving a connected-but-silent socket (half-open after a NAT/conntrack
+  /// drop, or a stalled server) hanging every call forever.
+  final Duration callTimeout;
   final Socket _socket;
 
   int _nextId = 0;
@@ -62,7 +68,7 @@ class ElectrumClient {
   final Completer<void> _done = Completer<void>();
   bool _closed = false;
 
-  ElectrumClient._(this.host, this.port, this._socket) {
+  ElectrumClient._(this.host, this.port, this.callTimeout, this._socket) {
     _socket
         .cast<List<int>>()
         .transform(utf8.decoder)
@@ -88,7 +94,7 @@ class ElectrumClient {
     final port = int.parse(endpoint.substring(colon + 1));
 
     final socket = await Socket.connect(host, port, timeout: timeout);
-    final client = ElectrumClient._(host, port, socket);
+    final client = ElectrumClient._(host, port, timeout, socket);
     // Wire contract: server.version is the first message on a fresh socket.
     await client._call('server.version', ['danawallet-frigate', '1.4']);
     return client;
@@ -115,7 +121,35 @@ class ElectrumClient {
       'params': params,
       'id': id,
     }));
-    return completer.future;
+    // F-R12a: the completer is resolved ONLY by a reply (_onLine) or socket
+    // close — a connected-but-silent socket (half-open after a NAT/conntrack
+    // drop, or a stalled server) would hang the caller forever. Race every
+    // call against [callTimeout]; on timeout tear the connection down (the
+    // id/reply mapping is suspect after a silent gap) so all pending calls
+    // fail catchably and `done` completes — the monitor's B3.7 reconnect
+    // then fires instead of the client limping on half-open.
+    return completer.future.timeout(callTimeout, onTimeout: () {
+      _teardown('electrum call $method got no reply within '
+          '${callTimeout.inMilliseconds}ms');
+      throw TimeoutException(
+          'electrum call $method got no reply within '
+          '${callTimeout.inMilliseconds}ms',
+          callTimeout);
+    });
+  }
+
+  /// Kill the connection after it went bad (call timeout): fail every pending
+  /// call and destroy the socket so `done` completes for the reconnect path.
+  void _teardown(String reason) {
+    if (_closed) return;
+    _closed = true;
+    for (final completer in _pending.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(TimeoutException(reason, callTimeout));
+      }
+    }
+    _pending.clear();
+    _socket.destroy();
   }
 
   void _onLine(String line) {
@@ -189,12 +223,15 @@ class ElectrumClient {
   }
 
   Future<void> close() async {
+    final wasClosed = _closed;
     _closed = true;
     for (final completer in _pending.values) {
-      completer.completeError(StateError('electrum client closed'));
+      if (!completer.isCompleted) {
+        completer.completeError(StateError('electrum client closed'));
+      }
     }
     _pending.clear();
-    await _notifications.close();
+    if (!wasClosed) await _notifications.close();
     _socket.destroy();
   }
 }
