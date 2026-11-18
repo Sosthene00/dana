@@ -14,11 +14,84 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:logger/logger.dart';
 
-/// Raised by [NameServerRepository.requestChallenge] on any non-200
-/// response from `POST /challenge` (401/429/400 all land here; callers
-/// branch on [status]).
+/// Spec section 6 machine-readable error codes (D3). The client retry
+/// matrix branches on these values ONLY - prose classification is deleted
+/// outright with no legacy shim, and any body whose `message` field is not
+/// one of these exact strings parses as null (terminal catch-all).
+enum NameServerErrorCode {
+  nonceExpired('nonce_expired'),
+  nonceMismatch('nonce_mismatch'),
+  nonceUnknown('nonce_unknown'),
+  signatureInvalid('signature_invalid'),
+  usernameTaken('username_taken'),
+  usernameInvalid('username_invalid'),
+  rateLimited('rate_limited'),
+  unknown('unknown');
+
+  const NameServerErrorCode(this.wire);
+
+  /// Exact wire spelling sent by the name server.
+  final String wire;
+
+  /// Exact-match parse of a server-supplied code string. Anything else
+  /// (prose, future/unknown codes) yields null: the catch-all `unknown`
+  /// handling is the caller's job (terminal, no retry).
+  static NameServerErrorCode? tryParse(String? raw) {
+    for (final value in values) {
+      if (value.wire == raw) {
+        return value;
+      }
+    }
+    return null;
+  }
+}
+
+/// Extracts the `message` field from an error body when it parses as a JSON
+/// object carrying a string `message`; null otherwise (non-JSON error bodies
+/// are legal and carry no code).
+String? _messageFromBody(String body) {
+  try {
+    final decoded = jsonDecode(body);
+    if (decoded is Map && decoded['message'] is String) {
+      return decoded['message'] as String;
+    }
+  } catch (_) {
+    // Non-JSON error body: no machine-readable code present.
+  }
+  return null;
+}
+
+/// Parses a numeric `Retry-After` response header into a delay. Absent or
+/// unparseable (e.g. HTTP-date form) headers yield null and the caller falls
+/// back to its local schedule. package:http lowercases header names.
+Duration? _retryAfterFrom(Map<String, String> headers) {
+  String? raw;
+  headers.forEach((name, value) {
+    if (name.toLowerCase() == 'retry-after') {
+      raw = value;
+    }
+  });
+  if (raw == null) {
+    return null;
+  }
+  final seconds = int.tryParse(raw!.trim());
+  if (seconds == null || seconds < 0) {
+    return null;
+  }
+  return Duration(seconds: seconds);
+}
+
+/// The spec code carried by a rejection: the body's `message` field when it
+/// exactly matches a section-6 code, else - for a 429, whose challenge-side
+/// bodies are still prose - the machine-readable `rate_limited` mapping from
+/// the status code itself. No prose is ever matched (D3).
+NameServerErrorCode? _codeFromBody(String body, int status) =>
+    NameServerErrorCode.tryParse(_messageFromBody(body)) ??
+    (status == 429 ? NameServerErrorCode.rateLimited : null);
+
 class ChallengeRejectedException implements Exception {
-  ChallengeRejectedException(this.status, this.body);
+  ChallengeRejectedException(this.status, this.body,
+      {this.code, this.retryAfter});
 
   /// HTTP status code returned by the name server.
   final int status;
@@ -26,25 +99,38 @@ class ChallengeRejectedException implements Exception {
   /// Raw response body as delivered by the name server.
   final String body;
 
+  /// Spec section 6 machine-readable code (D3), when the body carried one.
+  final NameServerErrorCode? code;
+
+  /// Server-supplied `Retry-After` delay, when present and numeric.
+  final Duration? retryAfter;
+
   @override
-  String toString() => 'ChallengeRejectedException(HTTP $status): $body';
+  String toString() => 'ChallengeRejectedException(HTTP $status'
+      '${code == null ? '' : ', code ${code!.wire}'}): $body';
 }
 
-/// Raised by [NameServerRepository.registerDanaAddress] when the name
-/// server rejects a registration with HTTP 401 (missing/invalid challenge
-/// proof).
 class RegisterRejectedException implements Exception {
-  RegisterRejectedException(this.status, this.message);
+  RegisterRejectedException(this.status, this.message,
+      {this.code, this.retryAfter});
 
   /// HTTP status code returned by the name server.
   final int status;
 
   /// Server-provided `message` field when the body parsed as JSON with a
-  /// string `message`, else the raw response body.
+  /// string `message`, else the raw response body. On spec v1 servers this
+  /// is the machine-readable code itself.
   final String message;
 
+  /// Spec section 6 machine-readable code (D3), when the body carried one.
+  final NameServerErrorCode? code;
+
+  /// Server-supplied `Retry-After` delay, when present and numeric.
+  final Duration? retryAfter;
+
   @override
-  String toString() => 'RegisterRejectedException(HTTP $status): $message';
+  String toString() => 'RegisterRejectedException(HTTP $status'
+      '${code == null ? '' : ', code ${code!.wire}'}): $message';
 }
 
 class NameServerRepository {
@@ -148,19 +234,12 @@ class NameServerRepository {
       Logger().e('Request URL: $baseUrl/register');
       Logger().e('Response body: ${response.body}');
 
-      if (response.statusCode == 401) {
-        String serverMessage = response.body;
-        try {
-          final decodedError = jsonDecode(response.body);
-          if (decodedError is Map && decodedError['message'] is String) {
-            serverMessage = decodedError['message'] as String;
-          }
-        } catch (_) {
-          // non-JSON error body: fall back to the raw body
-        }
-        throw RegisterRejectedException(response.statusCode, serverMessage);
-      }
-      throw Exception(response.body);
+      throw RegisterRejectedException(
+        response.statusCode,
+        _messageFromBody(response.body) ?? response.body,
+        code: _codeFromBody(response.body, response.statusCode),
+        retryAfter: _retryAfterFrom(response.headers),
+      );
     }
   }
 
@@ -180,6 +259,7 @@ class NameServerRepository {
     required String domain,
     required String spAddress,
     required String requestId,
+    required String networkKey,
   }) async {
     final request = NameServerChallengeRequest(
       id: requestId,
@@ -215,27 +295,21 @@ class NameServerRepository {
         );
       }
 
-      // Binding validation: rebuild the message the nameserver must have
-      // produced for *this* request and require an exact match before the
-      // caller is handed anything the spend key could sign (see the Rust
-      // oracle, which enforces only CHALLENGE_PREFIX). The field order and
-      // prefix mirror the server's `challenge_message()`
-      // (dana-nameserver src/main.rs): `dana-register:{network_key}:{nonce}:
-      // {user_name}:{domain}`.
-      //
-      // This is validation-only: [NameServerChallengeResponse.message] stays
-      // the exact bytes the server returned and is what goes on to signing
-      // (via the wallet-held signer, SpWallet::sign_registration_challenge).
-      // A reassembled string must never reach the spend key.
-      if (challenge.networkKey == null) {
-        throw const FormatException(
-          'Challenge response missing network_key: cannot validate the '
-          'binding before signing',
-        );
-      }
-      final String expectedMessage = 'dana-register:'
-          '${challenge.networkKey}:${challenge.nonce}'
-          ':$userName:$domain';
+      // Binding validation (D5 redundant check; the authoritative grammar
+      // enforcement lives in Rust, SpWallet::sign_registration_challenge):
+      // rebuild the message the nameserver must have produced for THIS
+      // request in the spec v1 format
+      // `dana-register:v1:{network_key}:{nonce}:{user_name}:{domain}:{sp_address}`
+      // and require an exact match before the caller is handed anything the
+      // spend key could sign. [networkKey] is the client-pinned per-network
+      // constant (D7) passed by the service - the server-echoed `network_key`
+      // field is never trusted, so a compromised server cannot steer the
+      // binding. Validation-only: [NameServerChallengeResponse.message]
+      // stays the exact bytes the server returned and is what goes on to
+      // signing.
+      final String expectedMessage = 'dana-register:v1'
+          ':$networkKey:${challenge.nonce}'
+          ':$userName:$domain:$spAddress';
       if (challenge.message != expectedMessage) {
         throw FormatException(
           'Challenge message does not match the requested binding. '
@@ -246,7 +320,12 @@ class NameServerRepository {
 
       return challenge;
     } else {
-      throw ChallengeRejectedException(response.statusCode, response.body);
+      throw ChallengeRejectedException(
+        response.statusCode,
+        response.body,
+        code: _codeFromBody(response.body, response.statusCode),
+        retryAfter: _retryAfterFrom(response.headers),
+      );
     }
   }
 

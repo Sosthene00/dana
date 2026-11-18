@@ -13,36 +13,68 @@ import 'package:danawallet/repositories/name_server_repository.dart';
 import 'package:danawallet/services/bip353_resolver.dart';
 import 'package:logger/logger.dart';
 
-// --- Challenge-auth registration retry matrix (T4b) ------------------------
-// Server-side counterpart: dana-nameserver challenge-auth. Verify-before-burn
-// (nameserver 72a3917) keeps the nonce valid when only signature verification
-// fails, so the same challenge can be re-signed once; any nonce-class
-// rejection requires a full re-challenge.
-const int _maxReSignRetries = 1;
-const int _maxNonceRefreshes = 1;
-const List<int> _challenge429BackoffSeconds = [2, 5, 15];
-// Server nonce TTL is 300 s; the confirm screen can sit open past it, so
-// refresh proactively inside this margin (epoch-seconds comparison).
-const int _challengeExpirySafetyMarginSeconds = 10;
+// --- Challenge-auth registration flow (spec sections 4-7) ------------------
+// Server-side counterpart: dana-nameserver v1 (machine-readable codes on
+// /register, challenge-auth:v1 capability on /info, verify-before-burn nonce
+// lifecycle). The retry matrix branches on machine-readable codes ONLY
+// (D3) - the prose-phrase classifier is deleted outright, no legacy shim.
+const int _maxReSignRetries = 1; // signature_invalid: one re-sign
+const int _maxNonceRefreshes = 1; // nonce-class: one fresh challenge
+const int _maxRateLimitedRetries = 3; // rate_limited backoff retries
+const List<int> _rateLimitBackoffSeconds = [2, 5, 15]; // local fallback
+// D6: the challenge is valid 300 s counted from RECEIPT; re-challenge
+// proactively once <= 30 s remain. expires_at is display-only and is never
+// compared against the client clock.
+const int _challengeTtlSeconds = 300;
+const int _challengeRefreshMarginSeconds = 30;
+const String challengeAuthCapabilityV1 = 'challenge-auth:v1';
 
-/// Server messages that indicate the challenge *signature* failed
-/// verification (dana-nameserver challenge-auth src/main.rs verification
-/// branch). These do not burn the nonce.
-const List<String> _signatureVerificationPhrases = [
-  'Signature verification failed',
-  'Invalid signature hex',
-  'Invalid signature encoding',
-  'Signature must be 64 bytes',
-];
+/// D7: pinned per-network client network_key constants (mirror of the Rust
+/// `challenge::NETWORK_KEY_*`). regtest has no acceptable constant and fails
+/// closed, structurally.
+String pinnedNetworkKey(Network network) {
+  switch (network) {
+    case Network.mainnet:
+      return 'sp';
+    case Network.testnet3:
+    case Network.testnet4:
+    case Network.signet:
+      return 'tsp';
+    case Network.regtest:
+      throw StateError(
+        'challenge-auth registration is unavailable on regtest: no pinned '
+        'network_key constant (D7, fail closed)',
+      );
+  }
+}
 
-/// Server messages that indicate the *nonce* itself is spent/stale/foreign
-/// (dana-nameserver challenge-auth ERR_EXPIRED / ERR_NO_CHALLENGE /
-/// ERR_MISMATCH). These require one fresh challenge.
-const List<String> _nonceRejectionPhrases = [
-  'Challenge nonce expired',
-  'Invalid or missing nonce',
-  'Nonce does not match',
-];
+/// D12: /info did not advertise the challenge-auth capability; the whole
+/// flow fail-closes before the first /challenge call.
+class ChallengeAuthUnavailableException implements Exception {
+  const ChallengeAuthUnavailableException();
+
+  @override
+  String toString() =>
+      'Challenge-auth registration unavailable: the name server does not '
+      'advertise the $challengeAuthCapabilityV1 capability (D12, fail closed)';
+}
+
+/// D6: seconds remaining of the receipt-relative challenge TTL. The
+/// countdown starts when the challenge was RECEIVED, never at expires_at.
+int challengeRemainingSeconds({
+  required DateTime receivedAt,
+  required DateTime now,
+  int ttlSeconds = _challengeTtlSeconds,
+}) =>
+    ttlSeconds - now.difference(receivedAt).inSeconds;
+
+/// D6: the flow re-challenges proactively once this many seconds (or fewer)
+/// remain of the receipt-relative TTL.
+bool shouldRechallenge(
+  int remainingSeconds, {
+  int marginSeconds = _challengeRefreshMarginSeconds,
+}) =>
+    remainingSeconds <= marginSeconds;
 
 class DanaAddressService {
   NameServerRepository nameServerRepository;
@@ -52,6 +84,13 @@ class DanaAddressService {
 
   DanaAddressService({required this.network})
       : nameServerRepository = NameServerRepository(network: network);
+
+  /// Test seam: the flow's wall clock (D6 receipt-relative countdowns).
+  DateTime Function() clock = DateTime.now;
+
+  /// Test seam: local rate_limited backoff schedule in seconds; defaults to
+  /// the spec's 2/5/15 s fallback (D3).
+  List<int> rateLimitBackoffSeconds = List.of(_rateLimitBackoffSeconds);
 
   Future<String> get danaAddressDomain async {
     // lazy initialization of domain
@@ -129,11 +168,22 @@ class DanaAddressService {
 
   /// Registers [username] on the dana address domain for [paymentCode].
   ///
-  /// Resolves the name first: if it already points at [paymentCode], returns
-  /// that address with no name-server call; if it points elsewhere, throws;
-  /// if it is unregistered, registers via the name server.
+  /// Flow (spec sections 4-7): capability gate on /info (D12, fail closed
+  /// before any challenge-auth call) -> machine-readable already-registered
+  /// check against the nameserver's own /lookup answer for our payment code
+  /// (D10, never local DNS inference) -> /challenge -> sign the server
+  /// message VERBATIM with the wallet-held key -> /register, retrying on
+  /// machine-readable codes only (D3): one re-sign on `signature_invalid`,
+  /// one fresh challenge on the nonce class, and on `rate_limited` at most 3
+  /// backoff retries honoring the server's `Retry-After` with the local
+  /// 2/5/15 s fallback. `username_taken` (first-commit-wins race loser,
+  /// D10) and every other code are terminal and rethrow. Expiry is
+  /// TTL-from-receipt: 300 s from challenge receipt with a proactive
+  /// re-challenge inside the last 30 s; `expires_at` is display-only and
+  /// never compared to the client clock (D6).
   ///
-  /// Returns the registered [Bip353Address].
+  /// Returns the registered [Bip353Address]; an already-registered
+  /// self-match confirmed by the nameserver check returns it as a no-op.
   /// [signChallenge] signs the server-issued challenge message with the
   /// wallet-held spend key and returns the 64-byte signature hex. It is a
   /// method parameter only (no field, no global): the service keeps its
@@ -145,65 +195,78 @@ class DanaAddressService {
     required Future<String> Function(String message) signChallenge,
   }) async {
     final requestId = _generateUniqueId();
-    final domain = await danaAddressDomain;
+
+    // Step 1 (D12): capability gate on /info - fail closed BEFORE the first
+    // challenge-auth operation. The same response yields the domain.
+    final info = await nameServerRepository.getInfo();
+    if (!info.capabilities.contains(challengeAuthCapabilityV1)) {
+      throw const ChallengeAuthUnavailableException();
+    }
+    final domain = info.domain;
+    _domain = domain;
     final danaAddress = Bip353Address(username: username, domain: domain);
 
-    // We try to resolve the address first to see if it already exists
-    try {
-      final bip321Uri = await Bip353Resolver.resolveParsed(danaAddress);
-      final resolvedPaymentCode = bip321Uri.reusablePaymentCodeForNetwork(
-        network,
-      );
-      if (resolvedPaymentCode == null) {
-        throw Bip353InvalidRecordException(
-          "$danaAddress exists but doesn't contain payment code",
+    // Step 2 (D10): machine-readable already-registered check. The
+    // nameserver's /lookup answer for OUR payment code is authoritative: if
+    // it already maps [username]@[domain] to us, registration is a no-op
+    // success. A name held by somebody else is invisible here and surfaces
+    // later as the distinct `username_taken` code from /register.
+    final ownedAddresses = await nameServerRepository.lookupDanaAddresses(
+      paymentCode,
+      requestId,
+    );
+    for (final owned in ownedAddresses) {
+      if (owned.username == username && owned.domain == domain) {
+        Logger().i(
+          '$danaAddress already registered to this wallet (nameserver '
+          'lookup), no-op success',
         );
+        return owned;
       }
-      if (resolvedPaymentCode.matches(other: paymentCode)) {
-        return danaAddress;
-      } else {
-        throw Bip353AddressAlreadyUsed(
-          address: danaAddress,
-          resolved: resolvedPaymentCode.encode(),
-        );
-      }
-    } on Bip353AddressNotRegisteredException {
-      Logger().i(
-        'Address $username@$domain not found, proceeding with registration',
-      );
     }
 
-    // Step 2: request the challenge (message + nonce) from the name server.
-    var challenge = await _requestChallengeWithBackoff(
-      userName: username,
-      domain: domain,
-      spAddress: paymentCode.encode(),
-    );
+    final networkKey = pinnedNetworkKey(network);
 
-    var reSignsLeft = _maxReSignRetries;
-    var nonceRefreshesLeft = _maxNonceRefreshes;
-
-    while (true) {
-      // Proactive expiry guard: expiresAt is epoch-seconds (T2 model); the
-      // screen can sit open past the 300 s nonce TTL, so re-challenge before
-      // burning a signature on a doomed nonce.
-      final expiresAt = challenge.expiresAt;
-      if (expiresAt != null &&
-          DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000 >=
-              expiresAt - _challengeExpirySafetyMarginSeconds) {
-        Logger().i('Challenge nonce within expiry margin, re-challenging');
-        challenge = await _requestChallengeWithBackoff(
+    // Step 3 (D3): request the challenge. rate_limited backs off per
+    // Retry-After when present, else the local 2/5/15 s schedule.
+    Future<NameServerChallengeResponse> requestChallenge() =>
+        _requestChallengeWithBackoff(
           userName: username,
           domain: domain,
           spAddress: paymentCode.encode(),
+          networkKey: networkKey,
         );
+    var challenge = await requestChallenge();
+    // D6: TTL counts from receipt of the challenge response.
+    var receivedAt = clock();
+
+    var reSignsLeft = _maxReSignRetries;
+    var nonceRefreshesLeft = _maxNonceRefreshes;
+    var rateLimitedRetriesLeft = _maxRateLimitedRetries;
+    var rateLimitedAttempts = 0;
+
+    while (true) {
+      // D6: proactive re-challenge inside the 30 s remaining margin of the
+      // receipt-relative 300 s TTL. expires_at is display-only and is never
+      // consulted here.
+      final remaining = challengeRemainingSeconds(
+        receivedAt: receivedAt,
+        now: clock(),
+      );
+      if (shouldRechallenge(remaining)) {
+        Logger().i(
+          'Challenge has $remaining s left (TTL-from-receipt), '
+          're-challenging proactively',
+        );
+        challenge = await requestChallenge();
+        receivedAt = clock();
         continue;
       }
 
-      // Step 3: sign the server message VERBATIM with the wallet-held key.
+      // Step 4: sign the server message VERBATIM with the wallet-held key.
       final signature = await signChallenge(challenge.message);
 
-      // Step 4: register with nonce + signature.
+      // Step 5: register with nonce + signature.
       try {
         return await nameServerRepository.registerDanaAddress(
           danaAddress: danaAddress,
@@ -213,59 +276,78 @@ class DanaAddressService {
           signature: signature,
         );
       } on RegisterRejectedException catch (e) {
-        if (_matchesAny(e.message, _signatureVerificationPhrases) &&
-            reSignsLeft > 0) {
-          // Verify-before-burn keeps the nonce valid on a pure signature
-          // failure: re-sign the SAME message, at most once.
-          reSignsLeft--;
-          Logger().w(
-            'Registration rejected on signature verification, re-signing once: ${e.message}',
-          );
-          continue;
+        // D3: the retry matrix branches on machine-readable codes ONLY.
+        switch (e.code) {
+          case NameServerErrorCode.signatureInvalid:
+            if (reSignsLeft > 0) {
+              reSignsLeft--;
+              // Verify-before-burn keeps the nonce valid on a pure
+              // signature failure: re-sign the SAME challenge once.
+              Logger().w(
+                'Registration rejected on signature_invalid, re-signing '
+                'the same challenge once',
+              );
+              continue;
+            }
+            rethrow; // budget exhausted: terminal
+          case NameServerErrorCode.nonceExpired:
+          case NameServerErrorCode.nonceMismatch:
+          case NameServerErrorCode.nonceUnknown:
+            if (nonceRefreshesLeft > 0) {
+              nonceRefreshesLeft--;
+              // Expired/unknown/mismatched nonce: one fresh challenge.
+              Logger().w(
+                'Registration rejected on ${e.code!.wire}, requesting one '
+                'fresh challenge',
+              );
+              challenge = await requestChallenge();
+              receivedAt = clock();
+              continue;
+            }
+            rethrow; // budget exhausted: terminal
+          case NameServerErrorCode.rateLimited:
+            if (rateLimitedRetriesLeft > 0) {
+              rateLimitedRetriesLeft--;
+              final delay = e.retryAfter ??
+                  Duration(
+                    seconds: rateLimitBackoffSeconds[rateLimitedAttempts.clamp(
+                        0, rateLimitBackoffSeconds.length - 1)],
+                  );
+              rateLimitedAttempts++;
+              Logger().w(
+                'Registration rate-limited, backing off '
+                '${delay.inSeconds}s '
+                '(retry $rateLimitedAttempts/$_maxRateLimitedRetries)',
+              );
+              if (delay > Duration.zero) {
+                await Future<void>.delayed(delay);
+              }
+              continue;
+            }
+            rethrow; // budget exhausted: terminal
+          case NameServerErrorCode.usernameTaken:
+            // D10: first-commit-wins race loser - terminal, no retry.
+            rethrow;
+          case NameServerErrorCode.usernameInvalid:
+          case NameServerErrorCode.unknown:
+          case null:
+            // Terminal catch-all: unrecognized or missing codes never retry.
+            rethrow;
         }
-        if (_matchesAny(e.message, _nonceRejectionPhrases) &&
-            nonceRefreshesLeft > 0) {
-          // Expired/unknown/mismatched nonce: one fresh challenge + register.
-          nonceRefreshesLeft--;
-          Logger().w(
-            'Registration rejected on nonce, refreshing challenge once: ${e.message}',
-          );
-          challenge = await _requestChallengeWithBackoff(
-            userName: username,
-            domain: domain,
-            spAddress: paymentCode.encode(),
-          );
-          continue;
-        }
-        rethrow;
       }
     }
   }
 
-  bool _matchesAny(String message, List<String> phrases) =>
-      phrases.any((p) => message.toLowerCase().contains(p.toLowerCase()));
-
-  /// Extracts the server-provided message from a rejected response body
-  /// (JSON `message` field when present, raw body otherwise).
-  String _serverMessageFromBody(String body) {
-    try {
-      final decoded = jsonDecode(body);
-      if (decoded is Map && decoded['message'] is String) {
-        return decoded['message'] as String;
-      }
-    } catch (_) {
-      // Non-JSON body: fall back to the raw text.
-    }
-    return body;
-  }
-
-  /// POST /challenge with the 429 backoff schedule (2 s/5 s/15 s sleeps,
-  /// then re-challenge). Any non-429 rejection rethrows untouched; exhaust
-  /// of the schedule throws a plain Exception carrying the server message.
+  /// POST /challenge with the spec rate_limited handling: branch on the
+  /// machine-readable `rate_limited` code only (D3, no prose matching),
+  /// sleeping per the server's `Retry-After` when present and the local
+  /// 2/5/15 s fallback otherwise, at most [_maxRateLimitedRetries] retries.
+  /// Any other code (or budget exhaustion) rethrows terminal.
   Future<NameServerChallengeResponse> _requestChallengeWithBackoff({
     required String userName,
     required String domain,
     required String spAddress,
+    required String networkKey,
   }) async {
     for (var attempt = 0;; attempt++) {
       try {
@@ -274,19 +356,27 @@ class DanaAddressService {
           domain: domain,
           spAddress: spAddress,
           requestId: _generateUniqueId(),
+          networkKey: networkKey,
         );
       } on ChallengeRejectedException catch (e) {
-        if (e.status != 429) rethrow;
-        if (attempt >= _challenge429BackoffSeconds.length) {
-          throw Exception(
-            'Challenge request rejected (HTTP 429) after ${_challenge429BackoffSeconds.length} backoff retries: ${_serverMessageFromBody(e.body)}',
-          );
+        if (e.code != NameServerErrorCode.rateLimited) {
+          rethrow;
         }
-        final seconds = _challenge429BackoffSeconds[attempt];
+        if (attempt >= _maxRateLimitedRetries) {
+          rethrow;
+        }
+        final delay = e.retryAfter ??
+            Duration(
+              seconds: rateLimitBackoffSeconds[
+                  attempt.clamp(0, rateLimitBackoffSeconds.length - 1)],
+            );
         Logger().w(
-          'Challenge 429, backing off ${seconds}s (retry ${attempt + 1}/${_challenge429BackoffSeconds.length})',
+          'Challenge rate-limited, backing off ${delay.inSeconds}s '
+          '(retry ${attempt + 1}/$_maxRateLimitedRetries)',
         );
-        await Future<void>.delayed(Duration(seconds: seconds));
+        if (delay > Duration.zero) {
+          await Future<void>.delayed(delay);
+        }
       }
     }
   }
