@@ -25,11 +25,18 @@ import 'package:provider/provider.dart';
 /// intact, "Yes" persists the ack, the URL, the declaration and the
 /// permanent disclosure record at save time (B5.2/B5.3/B5.4).
 class FrigateBackendScreen extends StatefulWidget {
-  const FrigateBackendScreen({super.key, this.probe});
+  const FrigateBackendScreen(
+      {super.key,
+      this.probe,
+      this.restartStopTimeout = const Duration(seconds: 10)});
 
   /// Injectable B5.1 probe (tests); defaults to the real probe. Never a
   /// subscribe — a probe must not burn the scan key (B5.1).
   final Future<void> Function(String url)? probe;
+
+  /// F-R12b: bound on the post-save restart's stop() before the restart is
+  /// abandoned (logged, never surfaced to the save flow).
+  final Duration restartStopTimeout;
 
   @override
   State<FrigateBackendScreen> createState() => _FrigateBackendScreenState();
@@ -125,11 +132,30 @@ class _FrigateBackendScreenState extends State<FrigateBackendScreen> {
     // starts the subscription in-session with the freshly saved
     // URL/declaration, no app restart (the service isolate re-evaluates on
     // its own retry loop).
+    //
+    // F-R12b: on-device the teardown can deadlock against the foreground
+    // service isolate holding the subscription — an unbounded
+    // `await controller.stop()` wedged the save AFTER the settings were
+    // already persisted (3/3 repros). The restart is therefore best-effort:
+    // stop() is bounded by [restartStopTimeout], and a stop that never
+    // returned is abandoned (logged, never surfaced to the save flow) and
+    // never races a fresh start() — a late-completing stop would tear the
+    // new subscription down. The save is already committed above, so the
+    // screen pops regardless of the teardown's fate.
+    var stopped = false;
     try {
       final controller =
           Provider.of<FrigateSubscriptionController>(context, listen: false);
-      await controller.stop();
-      unawaited(controller.start());
+      try {
+        await controller.stop().timeout(widget.restartStopTimeout);
+        stopped = true;
+      } on TimeoutException {
+        Logger().w('frigate restart: stop() did not return within '
+            '${widget.restartStopTimeout.inSeconds}s — restart abandoned, '
+            'the subscription re-evaluates on its next service start '
+            '(F-R12b)');
+      }
+      if (stopped) unawaited(controller.start());
     } catch (e) {
       Logger().w('frigate restart after declaration change failed: $e');
     }
