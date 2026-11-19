@@ -8,11 +8,13 @@ import 'package:danawallet/repositories/wallet_repository.dart';
 import 'package:danawallet/screens/home/home.dart';
 import 'package:danawallet/screens/onboarding/onboarding_skeleton.dart';
 import 'package:danawallet/services/dana_address_service.dart';
+import 'package:danawallet/services/registration_flow.dart';
 import 'package:danawallet/states/contacts_state.dart';
 import 'package:danawallet/states/wallet_state.dart';
 import 'package:danawallet/widgets/buttons/footer/footer_button.dart';
 import 'package:danawallet/widgets/buttons/footer/footer_button_outlined.dart';
 import 'package:danawallet/widgets/loading_widget.dart';
+import 'package:danawallet/widgets/registration_status_panel.dart';
 import 'package:flutter/material.dart';
 import 'package:logger/logger.dart';
 import 'package:provider/provider.dart';
@@ -67,13 +69,16 @@ class _RegisterDanaAddressScreenState extends State<RegisterDanaAddressScreen> {
   Timer? _debounceTimer;
   bool _isCheckingAvailability = false;
   bool? _isCustomUsernameAvailable;
-  bool _isRegistering = false;
   Bip353Address? _addressToRegister;
   String? _validationError;
   bool _hasUserEdited = false;
   String? _suggestedUsername;
   String? _domain;
   DanaAddressService? _danaAddressService;
+  // D11: the registration run and its named UI states. Non-null once the
+  // user starts a registration; its states render in the footer panel.
+  RegistrationController? _registrationController;
+  void Function()? _registrationListener;
 
   @override
   void initState() {
@@ -144,6 +149,7 @@ class _RegisterDanaAddressScreenState extends State<RegisterDanaAddressScreen> {
     _debounceTimer?.cancel();
     _focusNode.dispose();
     _customUsernameController.dispose();
+    _registrationController?.dispose();
     super.dispose();
   }
 
@@ -297,9 +303,14 @@ class _RegisterDanaAddressScreenState extends State<RegisterDanaAddressScreen> {
     }
   }
 
+  /// D11: starts one registration run driven by [RegistrationController].
+  /// Every named state (`challenging` / `confirming` / `retrying` with
+  /// countdown, confirmation, confirmation reset, terminal error) renders in
+  /// the footer panel; signing only happens after the user confirms the
+  /// exact challenge they saw fetched. Retry budgets live inside the flow,
+  /// so they reset only via the terminal screen's explicit restart.
   Future<void> _onRegister() async {
     final walletState = Provider.of<WalletState>(context, listen: false);
-    final contactsState = Provider.of<ContactsState>(context, listen: false);
     if (_addressToRegister == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('No Dana address available to register')),
@@ -307,47 +318,65 @@ class _RegisterDanaAddressScreenState extends State<RegisterDanaAddressScreen> {
       return;
     }
 
-    setState(() {
-      _isRegistering = true;
-    });
-
-    try {
-      await walletState.registerDanaAddress(_addressToRegister!.username);
-
-      if (!mounted) return;
-
-      // Registration successful - address is already saved by registerDanaAddress
-      final registeredAddress = walletState.danaAddress;
-      if (registeredAddress != null) {
-        Logger().i('Registration successful: $registeredAddress');
-
-        // Persist the dana address to storage (already done by registerDanaAddress, but ensure consistency)
-        await WalletRepository.instance.saveDanaAddress(registeredAddress);
-
-        // Set the dana address for the 'you' user
-        contactsState.setYouContactDanaAddress(registeredAddress);
-
-        if (mounted) {
-          Navigator.pushAndRemoveUntil(
-            context,
-            MaterialPageRoute(builder: (context) => const HomeScreen()),
-            (Route<dynamic> route) => false,
-          );
-
-          // if we're using the live environment, show a warning message after redirecting
-          if (isLiveEnv) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              showMainnetWarning();
-            });
-          }
+    final controller = RegistrationController(
+      runner: (flow) async {
+        await walletState.registerDanaAddress(
+          _addressToRegister!.username,
+          flow: flow,
+        );
+        final registered = walletState.danaAddress;
+        if (registered == null) {
+          throw Exception('Registration succeeded but dana address is null');
         }
-      } else {
-        throw Exception('Registration succeeded but dana address is null');
-      }
-    } catch (e) {
-      displayError('Failed to register username', e);
-      setState(() {
-        _isRegistering = false;
+        return registered;
+      },
+    );
+    controller.addListener(_registrationListener =
+        () => _onRegistrationChanged(controller));
+    setState(() {
+      _registrationController = controller;
+    });
+    await controller.start();
+  }
+
+  void _onRegistrationChanged(RegistrationController controller) {
+    final state = controller.state;
+    if (state is RegistrationSuccess) {
+      _finishRegistration(controller, state.address);
+    }
+    // every other state renders through RegistrationStatusPanel
+  }
+
+  Future<void> _finishRegistration(
+    RegistrationController controller,
+    Bip353Address registeredAddress,
+  ) async {
+    final contactsState = Provider.of<ContactsState>(context, listen: false);
+    if (_registrationListener != null) {
+      controller.removeListener(_registrationListener!);
+      _registrationListener = null;
+    }
+
+    Logger().i('Registration successful: $registeredAddress');
+
+    // Persist the dana address to storage (also done by registerDanaAddress,
+    // but ensure consistency)
+    await WalletRepository.instance.saveDanaAddress(registeredAddress);
+
+    // Set the dana address for the 'you' user
+    contactsState.setYouContactDanaAddress(registeredAddress);
+
+    if (!mounted) return;
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (context) => const HomeScreen()),
+      (Route<dynamic> route) => false,
+    );
+
+    // if we're using the live environment, show a warning message after redirecting
+    if (isLiveEnv) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        showMainnetWarning();
       });
     }
   }
@@ -529,11 +558,13 @@ class _RegisterDanaAddressScreenState extends State<RegisterDanaAddressScreen> {
 
     final skipButton = FooterButtonOutlined(title: 'Skip', onPressed: _onSkip);
 
+    final registration = _registrationController;
+    final showRegisterButton = registration == null;
+
     final registerButton = FooterButton(
       title: 'Register',
       onPressed: _onRegister,
-      isLoading: _isRegistering,
-      enabled: isButtonEnabled && !_isRegistering,
+      enabled: isButtonEnabled,
     );
 
     final bip353Info =
@@ -589,11 +620,18 @@ class _RegisterDanaAddressScreenState extends State<RegisterDanaAddressScreen> {
     final Widget footer = Column(children: [
       bip353Info,
       SizedBox(height: Adaptive.h(2)),
-      if (isDevEnv) ...[
+      // D11: once a registration run exists, its named states (confirmation
+      // panel, retrying countdown, terminal screen with the single restart)
+      // replace the register button in the footer.
+      if (registration != null) ...[
+        RegistrationStatusPanel(controller: registration),
+        SizedBox(height: Adaptive.h(2)),
+      ],
+      if (isDevEnv && showRegisterButton) ...[
         skipButton,
         SizedBox(height: Adaptive.h(2)),
       ],
-      registerButton,
+      if (showRegisterButton) registerButton,
     ]);
 
     return PopScope(

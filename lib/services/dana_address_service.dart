@@ -11,6 +11,7 @@ import 'package:danawallet/generated/rust/api/structs/network.dart';
 import 'package:danawallet/generated/rust/api/structs/silent_payment_code.dart';
 import 'package:danawallet/repositories/name_server_repository.dart';
 import 'package:danawallet/services/bip353_resolver.dart';
+import 'package:danawallet/services/registration_flow.dart';
 import 'package:logger/logger.dart';
 
 // --- Challenge-auth registration flow (spec sections 4-7) ------------------
@@ -189,10 +190,18 @@ class DanaAddressService {
   /// method parameter only (no field, no global): the service keeps its
   /// `DanaAddressService(network: network)` constructor shape and stays
   /// free of wallet state.
+  ///
+  /// [flow] is the optional D11 UI observer ([RegistrationFlow]): every
+  /// named state transition (`challenging` / `confirming` / `retrying
+  /// (countdown)`), every visible backoff countdown, and every background
+  /// re-challenge's confirmation reset is reported to it. With a flow
+  /// present, signing only proceeds after `onChallengeReceived` returns the
+  /// user's approval for that exact challenge; false aborts before signing.
   Future<Bip353Address> registerUser({
     required String username,
     required SilentPaymentCode paymentCode,
     required Future<String> Function(String message) signChallenge,
+    RegistrationFlow? flow,
   }) async {
     final requestId = _generateUniqueId();
 
@@ -228,13 +237,16 @@ class DanaAddressService {
     final networkKey = pinnedNetworkKey(network);
 
     // Step 3 (D3): request the challenge. rate_limited backs off per
-    // Retry-After when present, else the local 2/5/15 s schedule.
+    // Retry-After when present, else the local 2/5/15 s schedule. The D11
+    // flow observer sees `challenging` before every fetch and a visible
+    // `retrying (countdown)` for every backoff sleep.
     Future<NameServerChallengeResponse> requestChallenge() =>
         _requestChallengeWithBackoff(
           userName: username,
           domain: domain,
           spAddress: paymentCode.encode(),
           networkKey: networkKey,
+          flow: flow,
         );
     var challenge = await requestChallenge();
     // D6: TTL counts from receipt of the challenge response.
@@ -258,12 +270,29 @@ class DanaAddressService {
           'Challenge has $remaining s left (TTL-from-receipt), '
           're-challenging proactively',
         );
+        // D11: the background re-challenge visibly resets the confirmation
+        // before the fresh fetch, so an approval always matches a challenge
+        // the user saw fetched.
+        await flow?.onConfirmationReset();
         challenge = await requestChallenge();
         receivedAt = clock();
         continue;
       }
 
+      // D11: the user approves signing THIS exact challenge; a withheld
+      // approval aborts the flow before anything reaches the signer.
+      final approved = await (flow?.onChallengeReceived(
+            challenge: challenge,
+            remainingSeconds: remaining,
+          ) ??
+          Future<bool>.value(true));
+      if (!approved) {
+        throw const RegistrationAbortedException();
+      }
+
       // Step 4: sign the server message VERBATIM with the wallet-held key.
+      // D11 named state: confirming.
+      await flow?.onConfirming();
       final signature = await signChallenge(challenge.message);
 
       // Step 5: register with nonce + signature.
@@ -287,6 +316,14 @@ class DanaAddressService {
                 'Registration rejected on signature_invalid, re-signing '
                 'the same challenge once',
               );
+              // D11: the re-sign surfaces as the retrying state (no
+              // countdown — the same nonce is still valid).
+              await flow?.onRetrying(
+                code: e.code,
+                countdownSeconds: 0,
+                attempt: _maxReSignRetries - reSignsLeft,
+                maxAttempts: _maxReSignRetries,
+              );
               continue;
             }
             rethrow; // budget exhausted: terminal
@@ -300,6 +337,15 @@ class DanaAddressService {
                 'Registration rejected on ${e.code!.wire}, requesting one '
                 'fresh challenge',
               );
+              // D11: the refresh path renders the retrying state too, and
+              // the fresh challenge visibly resets the confirmation.
+              await flow?.onRetrying(
+                code: e.code,
+                countdownSeconds: 0,
+                attempt: _maxNonceRefreshes - nonceRefreshesLeft,
+                maxAttempts: _maxNonceRefreshes,
+              );
+              await flow?.onConfirmationReset();
               challenge = await requestChallenge();
               receivedAt = clock();
               continue;
@@ -318,6 +364,14 @@ class DanaAddressService {
                 'Registration rate-limited, backing off '
                 '${delay.inSeconds}s '
                 '(retry $rateLimitedAttempts/$_maxRateLimitedRetries)',
+              );
+              // D11: the backoff surfaces as the retrying state with a
+              // visible countdown instead of a silent log line.
+              await flow?.onRetrying(
+                code: e.code,
+                countdownSeconds: delay.inSeconds,
+                attempt: rateLimitedAttempts,
+                maxAttempts: _maxRateLimitedRetries,
               );
               if (delay > Duration.zero) {
                 await Future<void>.delayed(delay);
@@ -342,14 +396,18 @@ class DanaAddressService {
   /// machine-readable `rate_limited` code only (D3, no prose matching),
   /// sleeping per the server's `Retry-After` when present and the local
   /// 2/5/15 s fallback otherwise, at most [_maxRateLimitedRetries] retries.
-  /// Any other code (or budget exhaustion) rethrows terminal.
+  /// Any other code (or budget exhaustion) rethrows terminal. The D11 flow
+  /// observer sees `challenging` before every attempt and a visible
+  /// `retrying (countdown)` for every backoff sleep.
   Future<NameServerChallengeResponse> _requestChallengeWithBackoff({
     required String userName,
     required String domain,
     required String spAddress,
     required String networkKey,
+    RegistrationFlow? flow,
   }) async {
     for (var attempt = 0;; attempt++) {
+      await flow?.onChallenging();
       try {
         return await nameServerRepository.requestChallenge(
           userName: userName,
@@ -373,6 +431,14 @@ class DanaAddressService {
         Logger().w(
           'Challenge rate-limited, backing off ${delay.inSeconds}s '
           '(retry ${attempt + 1}/$_maxRateLimitedRetries)',
+        );
+        // D11: the backoff surfaces as the retrying state with a visible
+        // countdown instead of a silent log line.
+        await flow?.onRetrying(
+          code: e.code,
+          countdownSeconds: delay.inSeconds,
+          attempt: attempt + 1,
+          maxAttempts: _maxRateLimitedRetries,
         );
         if (delay > Duration.zero) {
           await Future<void>.delayed(delay);

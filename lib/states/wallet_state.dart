@@ -24,6 +24,7 @@ import 'package:danawallet/repositories/transactions_repository.dart';
 import 'package:danawallet/repositories/wallet_repository.dart';
 import 'package:danawallet/services/bip353_resolver.dart';
 import 'package:danawallet/services/dana_address_service.dart';
+import 'package:danawallet/services/registration_flow.dart';
 import 'package:danawallet/utils/coin_selection.dart';
 import 'package:flutter/material.dart';
 import 'package:logger/logger.dart';
@@ -420,7 +421,10 @@ class WalletState extends ChangeNotifier {
     return wallet.signRegistrationChallenge(message: message);
   }
 
-  Future<void> registerDanaAddress(String username) async {
+  /// [flow] is the optional D11 UI observer forwarded to the service's
+  /// `registerUser`; see [RegistrationFlow] for the named-state contract.
+  Future<void> registerDanaAddress(String username,
+      {RegistrationFlow? flow}) async {
     if (danaAddress != null) {
       throw Exception("Dana address already known");
     }
@@ -431,6 +435,7 @@ class WalletState extends ChangeNotifier {
       username: username,
       paymentCode: receivePaymentCode,
       signChallenge: signChallenge,
+      flow: flow,
     );
 
     // Registration successful
