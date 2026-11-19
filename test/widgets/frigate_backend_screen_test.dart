@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:danawallet/repositories/frigate_disclosure_repository.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
 import 'package:danawallet/screens/settings/network/frigate_backend_screen.dart';
@@ -29,8 +31,15 @@ import 'package:shared_preferences_platform_interface/shared_preferences_async_p
 /// (the R11 seam): start()/stop() are recorded, never run; urlAtStart/
 /// publicAtStart capture what the settings held when start() was invoked.
 class _RecordingController extends FrigateSubscriptionController {
-  _RecordingController() : super(frigateState: FrigateState());
+  /// F-R12b seams: [stopFuture] makes stop() hang (the exact on-device
+  /// deadlock) or return late; [stopError] makes it throw; [startCalled]
+  /// records whether a fresh start() ever ran.
+  _RecordingController({this.stopFuture, this.stopError})
+      : super(frigateState: FrigateState());
 
+  final Future<void>? stopFuture;
+  final Object? stopError;
+  bool startCalled = false;
   int startCalls = 0;
   int stopCalls = 0;
   String? urlAtStart;
@@ -39,11 +48,14 @@ class _RecordingController extends FrigateSubscriptionController {
   @override
   Future<void> stop() async {
     stopCalls++;
+    if (stopError != null) throw stopError!;
+    if (stopFuture != null) await stopFuture;
   }
 
   @override
   Future<bool> start() async {
     startCalls++;
+    startCalled = true;
     urlAtStart = await SettingsRepository.instance.getFrigateUrl();
     publicAtStart = await SettingsRepository.instance.isFrigatePublic();
     return true;
@@ -73,6 +85,33 @@ void main() {
           home: Scaffold(
               body: Provider<FrigateSubscriptionController>.value(
                   value: controller, child: child)));
+
+  /// A save with an injected controller and a short [restartStopTimeout]
+  /// (the F-R12b seam): the post-save restart must never wedge the flow.
+  Future<_RecordingController> saveWithController(WidgetTester tester,
+      {required _RecordingController controller,
+      Duration restartStopTimeout = const Duration(seconds: 1)}) async {
+    await tester.pumpWidget(wrapWithController(
+      FrigateBackendScreen(
+        probe: (url) async {},
+        restartStopTimeout: restartStopTimeout,
+      ),
+      controller: controller,
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField), 'f-r12b.lan:50002');
+    await tester.tap(find.text('Save backend'));
+    // Flush the probe + persist, then advance fake time past the restart's
+    // stop() bound so a timed-out teardown resolves before the assertions.
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 2));
+    // Bounded: in the F-R12b red state the screen never pops — fail fast
+    // instead of the framework's 10-minute default timeout.
+    await tester.pumpAndSettle(const Duration(milliseconds: 50),
+        EnginePhase.sendSemanticsUpdate, const Duration(seconds: 5));
+    return controller;
+  }
 
   Future<void> declarePublicAndSave(WidgetTester tester,
       {required Future<void> Function(String url) probe}) async {
@@ -252,11 +291,63 @@ void main() {
             'in-session');
     expect(controller.urlAtStart, 'public.lan:50002');
     expect(controller.publicAtStart, isTrue);
-    expect(
-        await FrigateDisclosureRepository.instance.isPublicWarningAcked(),
+    expect(await FrigateDisclosureRepository.instance.isPublicWarningAcked(),
         isTrue,
         reason: 'the ack is persisted before the start, so the gate '
             'proceeds instead of holding the subscription');
     expect(find.byType(FrigateBackendScreen), findsNothing);
+  });
+  // --- F-R12b: the save flow must never hang on the post-persist restart ---
+  //
+  // On-device (F-R12b, 3/3 repros): after the settings are PERSISTED the
+  // restart's `await controller.stop()` never returns, so the screen stays
+  // stuck on "Probing backend…" forever. The save is committed; the UI must
+  // pop regardless of what the restart teardown does. The restart is
+  // best-effort: bounded by a timeout, and a stop that never returned never
+  // races a fresh start() (a late-completing stop would tear the new
+  // subscription down).
+
+  testWidgets(
+      'F-R12b: a hanging controller.stop() never wedges the save — the '
+      'settings are committed and the screen pops', (tester) async {
+    final settings = SettingsRepository.instance;
+    // The exact on-device hang: stop() never returns.
+    final controller =
+        _RecordingController(stopFuture: Completer<void>().future);
+
+    await saveWithController(tester, controller: controller);
+
+    expect(await settings.getFrigateUrl(), 'f-r12b.lan:50002',
+        reason: 'the save is committed before the restart');
+    expect(find.byType(FrigateBackendScreen), findsNothing,
+        reason: 'the screen must not stay stuck on "Probing backend…" '
+            'when the restart teardown never returns');
+    expect(controller.startCalled, isFalse,
+        reason: 'a stop that never returned must not race a fresh start() — '
+            'a late-completing stop would tear the new subscription down');
+  });
+
+  testWidgets(
+      'F-R12b: a slow-but-returning stop still restarts the subscription '
+      'in the background after the pop', (tester) async {
+    final controller = _RecordingController(
+        stopFuture: Future<void>.delayed(const Duration(milliseconds: 200)));
+
+    await saveWithController(tester, controller: controller);
+
+    expect(find.byType(FrigateBackendScreen), findsNothing);
+    expect(controller.startCalled, isTrue,
+        reason: 'the restart still runs (unawaited) once stop() returns');
+  });
+
+  testWidgets(
+      'F-R12b: a throwing stop() still pops the screen and never starts '
+      '(the pre-existing catch path)', (tester) async {
+    final controller = _RecordingController(stopError: StateError('boom'));
+
+    await saveWithController(tester, controller: controller);
+
+    expect(find.byType(FrigateBackendScreen), findsNothing);
+    expect(controller.startCalled, isFalse);
   });
 }
