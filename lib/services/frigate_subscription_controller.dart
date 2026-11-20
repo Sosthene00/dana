@@ -50,7 +50,7 @@ class FrigateSubscriptionController {
 
   /// B5.2-B5.4: the public-warning gate deciding whether the subscription
   /// may start. Since owner ruling R12 (2026-11-18) the warning normally
-  /// fires at SAVE time in FrigateBackendScreen; this gate remains only as
+  /// fires at SAVE time in ChainBackendScreen; this gate remains only as
   /// the migration path for installs whose public unacked URL predates the
   /// ruling (injectable for tests; defaults to the real repositories).
   final FrigateWarningGate warningGate;
@@ -115,7 +115,14 @@ class FrigateSubscriptionController {
         return false;
       }
 
-      final hostUrl = await SettingsRepository.instance.getFrigateUrl();
+      final settings = SettingsRepository.instance;
+      if (await settings.getChainBackend() != ChainBackendKind.frigate) {
+        Logger()
+            .i('frigate: chain backend is Blindbit, subscription not started');
+        return false;
+      }
+
+      final hostUrl = await settings.getFrigateUrl();
       if (hostUrl == null || hostUrl.isEmpty) {
         Logger()
             .i('frigate: no backend URL configured, subscription not started');

@@ -27,7 +27,7 @@ enum FrigateGateDecision {
 /// B5.2/B5.3/B5.4 decision core — the SUBSCRIPTION-START leg of the
 /// one-time public warning.
 ///
-/// Since ruling R12 the warning normally fires in [FrigateBackendScreen] at
+/// Since ruling R12 the warning normally fires in [ChainBackendScreen] at
 /// SAVE time (before the save commits). This gate remains only so installs
 /// whose public unacked URL predates the ruling still get the warning before
 /// their first public sync — in both the app isolate and the

@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:danawallet/repositories/frigate_disclosure_repository.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
-import 'package:danawallet/screens/settings/network/frigate_backend_screen.dart';
+import 'package:danawallet/screens/settings/chain_backend_screen.dart';
 import 'package:danawallet/services/frigate_subscription_controller.dart';
 import 'package:danawallet/services/frigate_url_probe.dart';
 import 'package:danawallet/states/frigate_state.dart';
@@ -16,16 +16,16 @@ import 'package:shared_preferences_platform_interface/shared_preferences_async_p
 // B5.1-B5.4 acceptance against the owner ruling R12 (2026-11-18): the
 // public warning gates the SAVE, not the first sync.
 //
-// Re-derived R10c/B8.4 acceptance: fresh install -> declare public +
+// Re-derived R10c/B8.4 acceptance: fresh install -> choose Frigate +
 // reachable -> warning fires AT SAVE exactly once -> "No" leaves the old
 // settings fully intact -> "Yes" saves and writes the disclosure record at
 // save time -> an already-acked wallet never re-fires.
 //
 // R11 (owner ruling, 2026-11-18): "modifying the settings to a frigate
 // backend should trigger the subscription immediately, without having to
-// restart the app." A SUCCESSFUL save — private or public — starts the
-// frigate subscription in-session (B5.2: the declaration takes effect
-// immediately on save, not "for the next start").
+// restart the app." A successful Frigate save starts the subscription
+// in-session. There is no public/private toggle: saving a Frigate URL is
+// the public path.
 
 /// Controller stub overriding only the lifecycle seams the screen touches
 /// (the R11 seam): start()/stop() are recorded, never run; urlAtStart/
@@ -92,7 +92,7 @@ void main() {
       {required _RecordingController controller,
       Duration restartStopTimeout = const Duration(seconds: 1)}) async {
     await tester.pumpWidget(wrapWithController(
-      FrigateBackendScreen(
+      ChainBackendScreen(
         probe: (url) async {},
         restartStopTimeout: restartStopTimeout,
       ),
@@ -100,8 +100,12 @@ void main() {
     ));
     await tester.pumpAndSettle();
 
+    await tester.tap(find.text('Frigate'));
+    await tester.pump();
     await tester.enterText(find.byType(TextField), 'f-r12b.lan:50002');
     await tester.tap(find.text('Save backend'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Yes — I understand, sync publicly'));
     // Flush the probe + persist, then advance fake time past the restart's
     // stop() bound so a timed-out teardown resolves before the assertions.
     await tester.pump();
@@ -115,12 +119,12 @@ void main() {
 
   Future<void> declarePublicAndSave(WidgetTester tester,
       {required Future<void> Function(String url) probe}) async {
-    await tester.pumpWidget(wrap(FrigateBackendScreen(probe: probe)));
+    await tester.pumpWidget(wrap(ChainBackendScreen(probe: probe)));
     await tester.pumpAndSettle();
 
-    await tester.enterText(find.byType(TextField), 'new.lan:50002');
-    await tester.tap(find.text('Public'));
+    await tester.tap(find.text('Frigate'));
     await tester.pump();
+    await tester.enterText(find.byType(TextField), 'new.lan:50002');
     await tester.tap(find.text('Save backend'));
     await tester.pumpAndSettle();
   }
@@ -132,6 +136,7 @@ void main() {
     // A pre-existing private configuration that must survive the abort.
     await settings.setFrigateUrl('old.lan:50002');
     await settings.setFrigatePublic(false);
+    await settings.setChainBackend(ChainBackendKind.blindbit);
 
     await declarePublicAndSave(tester, probe: (url) async {});
 
@@ -146,13 +151,15 @@ void main() {
         reason: 'the old URL is untouched');
     expect(await settings.isFrigatePublic(), isFalse,
         reason: 'the declaration is untouched');
+    expect(await settings.getChainBackend(), ChainBackendKind.blindbit,
+        reason: 'a declined Frigate save does not switch the backend');
     expect(await FrigateDisclosureRepository.instance.isPublicWarningAcked(),
         isFalse,
         reason: 'the ack state is untouched');
     expect(await FrigateDisclosureRepository.instance.getEntries(), isEmpty,
         reason: 'no disclosure record without consent');
     // The screen stays open (no pop), the dialog is gone.
-    expect(find.byType(FrigateBackendScreen), findsOneWidget);
+    expect(find.byType(ChainBackendScreen), findsOneWidget);
     expect(find.text('Sync through a public backend?'), findsNothing);
   });
 
@@ -172,13 +179,14 @@ void main() {
         reason: 'the ack is persisted at save');
     expect(await settings.getFrigateUrl(), 'new.lan:50002');
     expect(await settings.isFrigatePublic(), isTrue);
+    expect(await settings.getChainBackend(), ChainBackendKind.frigate);
     final entries = await disclosure.getEntries();
     expect(entries.length, 1,
         reason: 'J2: the disclosure record is written at save time, not at '
             'first successful subscription');
     expect(entries.single.url, 'new.lan:50002');
     // The screen pops after a committed save.
-    expect(find.byType(FrigateBackendScreen), findsNothing);
+    expect(find.byType(ChainBackendScreen), findsNothing);
   });
 
   testWidgets(
@@ -199,22 +207,22 @@ void main() {
         reason: 'each public URL still enters the permanent record');
   });
 
-  testWidgets('B5.2: a private save never fires the warning', (tester) async {
-    final settings = SettingsRepository.instance;
-
-    await tester.pumpWidget(wrap(FrigateBackendScreen(probe: (url) async {})));
+  testWidgets(
+      'saving a Frigate URL fires the privacy warning with no public/private '
+      'choice', (tester) async {
+    await tester.pumpWidget(wrap(ChainBackendScreen(probe: (url) async {})));
     await tester.pumpAndSettle();
 
+    expect(find.text('Private'), findsNothing);
+    expect(find.text('Public'), findsNothing);
+
+    await tester.tap(find.text('Frigate'));
+    await tester.pump();
     await tester.enterText(find.byType(TextField), 'private.lan:50002');
     await tester.tap(find.text('Save backend'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Sync through a public backend?'), findsNothing);
-    expect(await settings.getFrigateUrl(), 'private.lan:50002');
-    expect(await settings.isFrigatePublic(), isFalse);
-    expect(await FrigateDisclosureRepository.instance.isPublicWarningAcked(),
-        isFalse);
-    expect(await FrigateDisclosureRepository.instance.getEntries(), isEmpty);
+    expect(find.text('Sync through a public backend?'), findsOneWidget);
   });
 
   testWidgets(
@@ -231,52 +239,24 @@ void main() {
     expect(find.text('Could not reach it'), findsOneWidget);
     expect(await settings.getFrigateUrl(), isNull);
     expect(await FrigateDisclosureRepository.instance.getEntries(), isEmpty);
-    expect(find.byType(FrigateBackendScreen), findsOneWidget);
+    expect(find.byType(ChainBackendScreen), findsOneWidget);
   });
 
   // --- R11: a successful save starts the subscription immediately ---
   testWidgets(
-      'B5.2 (R11): a successful PRIVATE save starts the subscription '
-      'in-session — no app restart', (tester) async {
+      'B5.2 (R11): a successful Frigate save starts the subscription '
+      'in-session — the post-ack trigger needs no restart', (tester) async {
     final controller = _RecordingController();
 
     await tester.pumpWidget(wrapWithController(
-      FrigateBackendScreen(probe: (url) async {}),
+      ChainBackendScreen(probe: (url) async {}),
       controller: controller,
     ));
     await tester.pumpAndSettle();
 
-    await tester.enterText(find.byType(TextField), 'private.lan:50002');
-    await tester.tap(find.text('Save backend'));
-    await tester.pumpAndSettle();
-
-    expect(controller.startCalls, 1,
-        reason: 'R11: the save itself triggers the subscription start');
-    expect(controller.stopCalls, 1,
-        reason: 'the previous app-side leg is torn down first so the new '
-            'URL/declaration applies');
-    expect(controller.urlAtStart, 'private.lan:50002',
-        reason: 'start() reads the freshly committed settings');
-    expect(controller.publicAtStart, isFalse);
-    expect(find.byType(FrigateBackendScreen), findsNothing,
-        reason: 'the screen pops; no restart is involved');
-  });
-
-  testWidgets(
-      'B5.2 (R11): a successful PUBLIC save (ack at save) starts the '
-      'subscription in-session — the post-ack trigger needs no restart',
-      (tester) async {
-    final controller = _RecordingController();
-
-    await tester.pumpWidget(wrapWithController(
-      FrigateBackendScreen(probe: (url) async {}),
-      controller: controller,
-    ));
-    await tester.pumpAndSettle();
-
-    await tester.enterText(find.byType(TextField), 'public.lan:50002');
-    await tester.tap(find.text('Public'));
+    await tester.tap(find.text('Frigate'));
     await tester.pump();
+    await tester.enterText(find.byType(TextField), 'public.lan:50002');
     await tester.tap(find.text('Save backend'));
     await tester.pumpAndSettle();
 
@@ -295,7 +275,7 @@ void main() {
         isTrue,
         reason: 'the ack is persisted before the start, so the gate '
             'proceeds instead of holding the subscription');
-    expect(find.byType(FrigateBackendScreen), findsNothing);
+    expect(find.byType(ChainBackendScreen), findsNothing);
   });
   // --- F-R12b: the save flow must never hang on the post-persist restart ---
   //
@@ -319,7 +299,7 @@ void main() {
 
     expect(await settings.getFrigateUrl(), 'f-r12b.lan:50002',
         reason: 'the save is committed before the restart');
-    expect(find.byType(FrigateBackendScreen), findsNothing,
+    expect(find.byType(ChainBackendScreen), findsNothing,
         reason: 'the screen must not stay stuck on "Probing backend…" '
             'when the restart teardown never returns');
     expect(controller.startCalled, isFalse,
@@ -335,7 +315,7 @@ void main() {
 
     await saveWithController(tester, controller: controller);
 
-    expect(find.byType(FrigateBackendScreen), findsNothing);
+    expect(find.byType(ChainBackendScreen), findsNothing);
     expect(controller.startCalled, isTrue,
         reason: 'the restart still runs (unawaited) once stop() returns');
   });
@@ -347,7 +327,7 @@ void main() {
 
     await saveWithController(tester, controller: controller);
 
-    expect(find.byType(FrigateBackendScreen), findsNothing);
+    expect(find.byType(ChainBackendScreen), findsNothing);
     expect(controller.startCalled, isFalse);
   });
 }

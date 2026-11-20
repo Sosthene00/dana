@@ -3,6 +3,7 @@ import 'package:danawallet/data/enums/fiat_currency.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 const String _keyBlindbitUrl = "blindbiturl";
+const String _keyChainBackend = "chainbackend";
 const String _keyFrigateUrl = "frigateurl";
 const String _keyFrigatePublic = "frigatepublic";
 const String _keyFrigateElectrumUrl = "frigateelectrumurl";
@@ -16,6 +17,15 @@ const String _keyDustLimit = "dustlimit";
 const String _keyFiatCurrency = "fiatcurrency";
 const String _keyBlockExplorerUrl = "blockexplorerurl";
 const String _keyAmountDisplayUnit = "amountdisplayunit";
+
+/// Which server the chain-backend screen last committed.
+///
+/// Unset keeps an existing Frigate URL active, so installs that already
+/// configured Frigate do not lose the subscription. Otherwise Blindbit.
+enum ChainBackendKind {
+  blindbit,
+  frigate,
+}
 
 class SettingsRepository {
   final SharedPreferencesAsync prefs = SharedPreferencesAsync();
@@ -49,6 +59,27 @@ class SettingsRepository {
 
   Future<String?> getBlindbitUrl() async {
     return await prefs.getString(_keyBlindbitUrl);
+  }
+
+  Future<void> setChainBackend(ChainBackendKind kind) async {
+    await prefs.setString(_keyChainBackend, kind.name);
+  }
+
+  /// The committed choice. A missing value follows a configured Frigate URL
+  /// so a wallet that already synced through Frigate keeps doing so.
+  Future<ChainBackendKind> getChainBackend() async {
+    final stored = await prefs.getString(_keyChainBackend);
+    if (stored == ChainBackendKind.frigate.name) {
+      return ChainBackendKind.frigate;
+    }
+    if (stored == ChainBackendKind.blindbit.name) {
+      return ChainBackendKind.blindbit;
+    }
+    final frigateUrl = await getFrigateUrl();
+    if (frigateUrl != null && frigateUrl.isNotEmpty) {
+      return ChainBackendKind.frigate;
+    }
+    return ChainBackendKind.blindbit;
   }
 
   Future<void> setFrigateUrl(String? url) async {

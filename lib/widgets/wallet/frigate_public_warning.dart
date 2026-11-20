@@ -13,7 +13,7 @@ import 'package:provider/provider.dart';
 /// a held pre-ruling sync proceed.
 ///
 /// Owner ruling R12 (2026-11-18): the warning gates the SAVE —
-/// FrigateBackendScreen shows it before a public save commits; "No — go
+/// ChainBackendScreen shows it before a Frigate save commits; "No — go
 /// back" (returns `false`) aborts the save with the settings untouched.
 ///
 /// It also still surfaces for installs whose public unacked URL predates

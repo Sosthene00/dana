@@ -6,6 +6,7 @@ import 'package:danawallet/extensions/network.dart';
 import 'package:danawallet/extensions/outpoint.dart';
 import 'package:danawallet/generated/rust/api/chain.dart';
 import 'package:danawallet/generated/rust/api/stream.dart';
+import 'package:danawallet/generated/rust/api/structs/network.dart';
 import 'package:danawallet/generated/rust/api/structs/outpoint.dart';
 import 'package:danawallet/generated/rust/api/structs/state_update.dart';
 import 'package:danawallet/repositories/mempool_api_repository.dart';
@@ -196,7 +197,17 @@ class SyncEngine {
     return _idleCompleter!.future.timeout(timeout, onTimeout: () {});
   }
 
-  Future<int> _heightFromBirthday(network) async {
+  Future<int> _heightFromBirthday(Network network) async {
+    // mempool.space has no regtest API. That request comes back as the
+    // website HTML with status 200, so a reset throws here on every sync
+    // and never records a starting height. A regtest chain is short enough
+    // to scan from the genesis block.
+    if (network == Network.regtest) {
+      Logger().i(
+          '[$_logTag] regtest has no block explorer, starting sync at height 0');
+      return 0;
+    }
+
     final birthday = await _walletRepository.readBirthday() ?? defaultBirthday;
     final mempoolApi = MempoolApiRepository(network: network);
     final block = await mempoolApi.getBlockFromTimestamp(birthday.toSeconds());
