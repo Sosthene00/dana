@@ -30,3 +30,11 @@ base64 = "0.22.1"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
+
+# ISS-001 fix: override esc (pinned transitively by spdk) with our fork that accepts
+# Frigate 1.4.1's header-notification params object ({"header":{...}}) in addition to
+# the standard seq shape. Without this, every block notification kills the connection.
+# Upstream PR pending; drop this stanza once bitcoindevkit/electrum_streaming_client
+# merges a fix containing it.
+[patch."https://github.com/bitcoindevkit/electrum_streaming_client"]
+electrum_streaming_client = { git = "https://github.com/still-gleam/electrum_streaming_client", branch = "iss001-frigate-header-params" }
