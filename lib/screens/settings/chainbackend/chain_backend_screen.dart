@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:danawallet/global_functions.dart';
 import 'package:danawallet/repositories/frigate_disclosure_repository.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
+import 'package:danawallet/services/foreground_sync_service.dart';
 import 'package:danawallet/services/frigate_subscription_controller.dart';
 import 'package:danawallet/services/frigate_url_probe.dart';
 import 'package:danawallet/states/chain_state.dart';
@@ -22,13 +23,20 @@ class ChainBackendScreen extends StatefulWidget {
   const ChainBackendScreen(
       {super.key,
       this.probe,
-      this.restartStopTimeout = const Duration(seconds: 10)});
+      this.restartStopTimeout = const Duration(seconds: 10),
+      this.requestServiceRestart});
 
   /// Injectable Frigate probe (tests). Never a subscribe.
   final Future<void> Function(String url)? probe;
 
   /// Bound on the post-save Frigate stop() before the restart is abandoned.
   final Duration restartStopTimeout;
+
+  /// R11 seam (tests): how the screen asks a live foreground service to
+  /// re-evaluate the frigate settings in-session. Returns true when the
+  /// service owns the subscription leg and took the restart request — the
+  /// app isolate must then not stop()/start() in-process (B2.3).
+  final Future<bool> Function()? requestServiceRestart;
 
   @override
   State<ChainBackendScreen> createState() => _ChainBackendScreenState();
@@ -41,6 +49,12 @@ class _ChainBackendScreenState extends State<ChainBackendScreen> {
 
   Future<void> Function(String url) get _probe =>
       widget.probe ?? probeFrigateUrl;
+
+  /// R11: the in-session service restart seam (tests inject a recording
+  /// fake; production asks the live foreground service).
+  Future<bool> Function() get _requestServiceRestart =>
+      widget.requestServiceRestart ??
+      ForegroundSyncService.requestFrigateRestart;
 
   ChainBackendKind _selected = ChainBackendKind.blindbit;
   String? _inlineError;
@@ -170,10 +184,23 @@ class _ChainBackendScreenState extends State<ChainBackendScreen> {
   }
 
   Future<void> _restartFrigate() async {
-    var stopped = false;
     try {
       final controller =
           Provider.of<FrigateSubscriptionController>(context, listen: false);
+      // R11 (owner ruling 2026-11-18): a saved frigate backend takes effect
+      // immediately, in-session. The subscription lives in the foreground
+      // service (B2.1) and the app isolate stays read-only while the
+      // service holds the writer lease (B2.3) — so when the service owns
+      // the leg (this isolate's controller is not the writer), the SERVICE
+      // restarts the subscription from the freshly committed settings; an
+      // app-isolate start() here would be refused read-only and the saved
+      // URL would not apply until the next service start. The in-process
+      // restart below runs only when this isolate is the writer or no live
+      // service exists (Linux / service down).
+      if (!controller.isRunning && await _requestServiceRestart()) {
+        return;
+      }
+      var stopped = false;
       try {
         await controller.stop().timeout(widget.restartStopTimeout);
         stopped = true;

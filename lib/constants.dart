@@ -67,6 +67,11 @@ const String bgKeyFrigateRefresh = 'frigateRefresh';
 // Message keys sent to the background sync service from the main isolate.
 const String bgKeySync = 'sync';
 
+/// R11: main isolate -> foreground service: re-evaluate the frigate settings
+/// in-session and restart the subscription from the freshly committed
+/// settings (the service isolate owns the subscription leg, B2.1).
+const String bgKeyRestartFrigate = 'restartFrigate';
+
 // Enforce english convention for amounts inputs
 const String decimalSeparator = '.';
 const String groupSeparator = ',';
