@@ -343,11 +343,11 @@ existence by the audit pass.
 
 | Rule | Covering test (file::name) |
 | --- | --- |
-| B1.1 | PARTIAL — test/services/sync_engine_backend_gate_test.dart::blindbit committed (positive control): the heartbeat scans (blindbit wake-cycle scan shape unchanged); backend-default selection leg UNCOVERED |
+| B1.1 | `test/services/sync_engine_backend_gate_test.dart::blindbit committed (positive control): the heartbeat scans` (blindbit wake-cycle scan shape unchanged) + `test/services/sync_engine_backend_gate_test.dart::nothing configured: the default resolves to blindbit and the heartbeat walks the blindbit wake-cycle scan` (backend-default selection leg: fresh state with no committed backend selects and commits blindbit) + `test/services/sync_engine_backend_gate_test.dart::frigate URL configured, backend never committed: the default resolves to the frigate backend (R13: the frigate URL is the electrum-compatible backend)` (default derivation keeps a configured frigate URL active) |
 | B1.2 | `test/services/sync_engine_backend_gate_test.dart::frigate committed: one heartbeat does no blindbit work` |
 | B1.3 | UNCOVERED — no test exercises the wake path (lib/services/sync_task_handler.dart) |
 | B1.4 | PARTIAL — `test/services/sync_engine_backend_gate_test.dart::frigate committed: one heartbeat does no blindbit work` (no sync-state DB write on the frigate path, so the blindbit checkpoint is never written by it) + `test/repositories/frigate_candidates_test.dart::candidate rows never appear in owned_outputs` |
-| B1.5 | PARTIAL — `test/services/sync_engine_backend_gate_test.dart::blindbit committed (positive control): the heartbeat scans` (frigate -> blindbit switch-back: the blindbit engine resumes untouched); blindbit -> frigate start_height leg UNCOVERED |
+| B1.5 | `test/services/sync_engine_backend_gate_test.dart::blindbit committed (positive control): the heartbeat scans` (frigate -> blindbit switch-back: the blindbit engine resumes untouched) + `test/services/sync_engine_backend_gate_test.dart::a committed blindbit wallet flips to frigate: no blindbit work after the flip and the fresh subscription starts from the same committed height` (blindbit -> frigate start_height leg: start_height = the committed height, no blindbit work after the flip, no wallet state rebuilt) |
 | B2.1 | UNCOVERED — foreground-service lifecycle (start on wallet start, survives main-app death) has no test |
 | B2.2 | `test/services/frigate_event_handler_test.dart::R3: a Confirmed history event writes the receipt into owned_outputs` + `test/services/frigate_event_handler_test.dart::B3.1: an Unconfirmed event creates pending candidate rows` + `test/services/sync_service_refresh_contract_test.dart::graduation message (bgKeyRefresh: full) triggers a full DB re-read` (the app READS, does not rescan) |
 | B2.3 | `test/services/writer_lease_test.dart::a live foreign writer holds the lease — the caller stays read-only` |
@@ -384,8 +384,8 @@ existence by the audit pass.
 | B8.4 | `test/widgets/frigate_backend_screen_test.dart::B5.4/B8.4 (R12): "Yes" at save persists ack + URL + declaration and writes the disclosure record AT SAVE TIME` + `test/services/frigate_warning_gate_test.dart::public, already acked: proceed, no warning (B5.4 never again)` + `test/repositories/frigate_disclosure_test.dart::entries survive wallet reset (permanent record)` |
 | B8.5 | `rust/tests/rig_b81_acceptance.rs::rig_b81_three_phase_acceptance` executes steps 1-6; step 7 (the B8.3 force-stop leg) UNCOVERED |
 
-Uncovered/PARTIAL rows at the time of writing: B1.1 (default leg), B1.3, B1.4 (shared-layer
-leg), B1.5 (start_height leg), B2.1, B2.5, B2.6 (stays-subscribed leg), B2.7, B3.6 (no-endpoint
+Uncovered/PARTIAL rows at the time of writing: B1.3, B1.4 (shared-layer
+leg), B2.1, B2.5, B2.6 (stays-subscribed leg), B2.7, B3.6 (no-endpoint
 leg), B3.7 (cap leg), B3.8 (RBF + reconciliation legs), B4.2 (send-availability leg), B5.5,
 B6.1, B6.2, B6.3, B7.1 (service-death leg), B7.2 (device leg), B8.2, B8.3, B8.5 (step 7).
 These are follow-up card candidates, not gaps to fill in this change.
