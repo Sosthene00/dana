@@ -1,6 +1,9 @@
 # Dana Wallet — Frigate Backend Behavior Specification
 
-**Status: v1.2 (2026-11-18) — OWNER RULING R11: saving a frigate backend starts the subscription
+**Status: v1.3 (2026-11-25) — OWNER RULING R13: B3.6 default electrum endpoint amended — the
+frigate backend URL itself (an electrum endpoint; B5.1 probe proves the protocol on the same
+host:port), `frigateelectrumurl` overrides, dedicated endpoint UI deferred to R7. Earlier
+status: v1.2 (2026-11-18) — OWNER RULING R11: saving a frigate backend starts the subscription
 immediately — no app restart (B5.2 amended; verbatim ruling: "modifying the settings to a frigate
 backend should trigger the subscription immediately, without having to restart the app."). Earlier
 status: v1.1 (2026-11-18) — OWNER RULING R12: the public warning gates the SAVE (no-save on
@@ -136,8 +139,14 @@ branch cut from `dev`.
   path) marks the candidate `dropped`; a dropped candidate leaves no trace in balance. The
   concrete eviction-detection rule is an open spec item (§9-O2).
 - **B3.6** Phase-3 confirmation tracking registers the scripthashes of DERIVED candidate
-  outputs with the electrum server (default: the wallet's configured blindbit
-  electrum-compatible API; self-hosted electrs as an advanced override). The electrum
+  outputs with the electrum server (default, amended R13 2026-11-25: the frigate backend URL
+  itself — the frigate endpoint IS an electrum endpoint, the B5.1 probe handshakes
+  `server.version` against the same host:port, so the derived endpoint tracks whatever port
+  the backend runs on; settings key `frigateelectrumurl` overrides, dedicated endpoint UI is
+  R7). The earlier default (a blindbit electrum-compatible API) matched the blindbit-rs
+  built-in electrum server, which the deployed blindbit v2 does not expose — frigate is the
+  only electrum endpoint in the regular stack. With neither the override nor a frigate URL
+  configured the monitor does not start (logged) — candidates stay pending. The electrum
   connection carries no scan key and reveals only outputs the frigate operator already saw.
 
 - **B3.7** Phase-3 scripthash subscribe strategy (drafts §9-O1;
