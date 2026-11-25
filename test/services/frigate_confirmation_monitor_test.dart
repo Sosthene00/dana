@@ -7,6 +7,9 @@ import 'package:danawallet/services/electrum_client.dart';
 import 'package:danawallet/services/frigate_confirmation_monitor.dart';
 import 'package:danawallet/repositories/database_helper.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
+import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'mock_electrum_server.dart';
@@ -59,6 +62,15 @@ Future<void> waitUntil(String description, Future<bool> Function() probe,
 
 void main() {
   sqfliteFfiInit();
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  setUpAll(() {
+    // ONE platform instance for the whole file: the SettingsRepository
+    // singleton captures it at first construction (same pattern as the
+    // frigate disclosure tests).
+    SharedPreferencesAsyncPlatform.instance =
+        InMemorySharedPreferencesAsync.empty();
+  });
 
   group('classifyHistory (B3.3/B3.5/O2 decision)', () {
     test('txid in a confirmed entry graduates', () {
@@ -98,6 +110,7 @@ void main() {
     late int port;
 
     setUp(() async {
+      await SharedPreferencesAsync().clear();
       db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
       await applyMigrations(db);
       FrigateCandidatesRepository.testDatabaseOverride = () async => db;
@@ -141,6 +154,50 @@ void main() {
 
       final monitor = makeMonitor();
       await monitor.start(endpoint: '127.0.0.1:$port');
+
+      final expected = electrumScripthash(c.script);
+      await waitUntil(
+          'subscribe request for $expected',
+          () async => server
+              .paramsFor('blockchain.scripthash.subscribe')
+              .contains(expected));
+      await monitor.stop();
+    });
+
+    test('no configured electrum endpoint falls back to the frigate URL '
+        '(interim default until the R7 endpoint UI)', () async {
+      // The frigate backend IS an electrum endpoint (the B5.1 probe
+      // handshakes server.version against the same host:port), so with no
+      // `frigateelectrumurl` the monitor must reuse the frigate URL.
+      await SharedPreferencesAsync()
+          .setString('frigateurl', '127.0.0.1:$port');
+
+      final c = candidate();
+      await FrigateCandidatesRepository.instance.upsertCandidate(c);
+
+      final monitor = makeMonitor();
+      await monitor.start();
+
+      final expected = electrumScripthash(c.script);
+      await waitUntil(
+          'subscribe request for $expected',
+          () async => server
+              .paramsFor('blockchain.scripthash.subscribe')
+              .contains(expected));
+      await monitor.stop();
+    });
+
+    test('an explicit frigateelectrumurl wins over the frigate URL fallback',
+        () async {
+      await SharedPreferencesAsync().setString('frigateurl', '127.0.0.1:1');
+      await SharedPreferencesAsync()
+          .setString('frigateelectrumurl', '127.0.0.1:$port');
+
+      final c = candidate();
+      await FrigateCandidatesRepository.instance.upsertCandidate(c);
+
+      final monitor = makeMonitor();
+      await monitor.start();
 
       final expected = electrumScripthash(c.script);
       await waitUntil(

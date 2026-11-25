@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:danawallet/repositories/frigate_disclosure_repository.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
-import 'package:danawallet/screens/settings/chain_backend_screen.dart';
+import 'package:danawallet/screens/settings/chainbackend/chain_backend_screen.dart';
 import 'package:danawallet/services/frigate_subscription_controller.dart';
 import 'package:danawallet/services/frigate_url_probe.dart';
 import 'package:danawallet/states/frigate_state.dart';

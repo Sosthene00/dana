@@ -1,7 +1,7 @@
 import 'package:bitcoin_ui/bitcoin_ui.dart';
 import 'package:danawallet/global_functions.dart';
 import 'package:danawallet/screens/settings/about/about_screen.dart';
-import 'package:danawallet/screens/settings/chain_backend_screen.dart';
+import 'package:danawallet/screens/settings/chainbackend/chain_backend_screen.dart';
 import 'package:danawallet/screens/settings/network/network_settings_screen.dart';
 import 'package:danawallet/screens/settings/personalization/personalisation_settings_screen.dart';
 import 'package:danawallet/screens/settings/widgets/settings_list_tile.dart';

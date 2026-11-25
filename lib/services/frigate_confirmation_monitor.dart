@@ -117,13 +117,27 @@ class FrigateConfirmationMonitor {
   /// Start the monitor against the configured electrum endpoint (B3.6):
   /// the wallet's configured electrum-compatible API URL (settings key
   /// `frigateelectrumurl`; a self-hosted electrs is the advanced override
-  /// value). Without a configured endpoint the monitor does not start
-  /// (logged) — candidates stay pending until it is configured; declaring
-  /// the endpoint UI is R7 (same pattern as the frigate URL key).
+  /// value). Without a configured endpoint the monitor falls back to the
+  /// frigate backend URL itself — interim default (owner decision, proper
+  /// hardening deferred to R7): the frigate endpoint IS an electrum
+  /// endpoint, the B5.1 probe handshakes `server.version` against the same
+  /// host:port, so the frigate URL is reused until a dedicated endpoint
+  /// key/UI exists. With neither configured the monitor does not start
+  /// (logged) — candidates stay pending until one is; declaring the
+  /// endpoint UI is R7 (same pattern as the frigate URL key).
   Future<void> start({String? endpoint}) async {
     _stopped = false;
     _endpoint =
         endpoint ?? await SettingsRepository.instance.getFrigateElectrumUrl();
+    if (_endpoint == null || _endpoint!.isEmpty) {
+      final frigateUrl = await SettingsRepository.instance.getFrigateUrl();
+      if (frigateUrl != null && frigateUrl.isNotEmpty) {
+        _endpoint = frigateUrl;
+        Logger().i('frigate confirmation tracking: no electrum endpoint '
+            'configured, defaulting to the frigate backend endpoint '
+            '$frigateUrl (interim until the R7 electrum endpoint UI)');
+      }
+    }
     if (_endpoint == null || _endpoint!.isEmpty) {
       Logger()
           .i('frigate confirmation tracking: no electrum endpoint configured, '
