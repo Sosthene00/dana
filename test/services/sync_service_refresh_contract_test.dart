@@ -7,17 +7,17 @@
 // balance never repainted.
 //
 // What is pinned here is the CONTRACT across the isolate boundary, not the
-// current bool literal:
-//   1. the graduation message (bgKeyRefresh: false on the current tip) must
+// wire encoding:
+//   1. the graduation message (bgKeyRefresh: RefreshKind.full) must
 //      trigger a FULL DB re-read: walletState.amount and transactions must
 //      reflect a receipt seeded directly into owned_outputs/transactions;
-//   2. lastSyncOnly=true semantics must NOT re-read the DB — this is the
+//   2. lastSyncOnly semantics must NOT re-read the DB — this is the
 //      4494028 bug reproduced in the harness, proving the positive contract
-//      would go red if the graduation path ever sent `true` again.
+//      would go red if the graduation path ever sent lastSyncOnly again.
 //
-// The test must stay green through the planned RefreshKind refactor card:
-// it asserts observable wallet state, never the wire value beyond what the
-// handler currently accepts.
+// The wire payload is the RefreshKind.wireName string ('full' /
+// 'lastSyncOnly'); tests pass it as a literal to pin the encoding itself,
+// and assert observable wallet state, never the enum instance.
 //
 // ignore_for_file: unimplemented_noSuchMethod
 import 'dart:async';
@@ -235,7 +235,7 @@ void main() {
   });
 
   group('isolate-boundary refresh contract (4494028 regression)', () {
-    test('graduation message (bgKeyRefresh: false) triggers a full DB re-read',
+    test('graduation message (bgKeyRefresh: full) triggers a full DB re-read',
         () async {
       // pre-receipt baseline: the wallet is up, balance is 0
       expect(walletState.amount.toSat(), 0);
@@ -253,7 +253,7 @@ void main() {
       walletState.addListener(() {
         if (!repainted.isCompleted) repainted.complete();
       });
-      syncService.handleServiceData({bgKeyRefresh: false});
+      syncService.handleServiceData({bgKeyRefresh: 'full'});
       await repainted.future.timeout(const Duration(seconds: 5),
           onTimeout: () =>
               fail('graduation message never triggered the UI refresh'));
@@ -269,16 +269,16 @@ void main() {
       expect(api.unexpectedApiCalls, isEmpty);
     });
 
-    test('lastSyncOnly=true semantics (the 4494028 bug) skip the DB re-read',
+    test('lastSyncOnly semantics (the 4494028 bug) skip the DB re-read',
         () async {
       expect(walletState.amount.toSat(), 0);
 
       await seedReceipt(_txidReceipt, 0, 21000);
 
-      // the buggy graduation announcement: the flag is read as
-      // lastSyncOnly, which early-returns before touching the DB —
-      // exactly the stale-balance bug 4494028 fixed.
-      syncService.handleServiceData({bgKeyRefresh: true});
+      // the buggy graduation announcement: the payload carries lastSyncOnly
+      // semantics, which early-returns before touching the DB — exactly the
+      // stale-balance bug 4494028 fixed.
+      syncService.handleServiceData({bgKeyRefresh: 'lastSyncOnly'});
       await pumpEventQueue();
       await Future<void>.delayed(const Duration(milliseconds: 100));
 
@@ -289,6 +289,24 @@ void main() {
           reason: 'lastSyncOnly must skip the DB re-read (bug repro)');
       expect(walletState.transactions, isEmpty,
           reason: 'lastSyncOnly must not re-read history either');
+    });
+
+    test('untyped bool payload (pre-refactor wire format) is ignored',
+        () async {
+      expect(walletState.amount.toSat(), 0);
+
+      await seedReceipt(_txidReceipt, 0, 21000);
+
+      // the pre-refactor bool must not silently re-enter the typed path:
+      // the payload is logged and dropped, never misinterpreted as a kind.
+      syncService.handleServiceData({bgKeyRefresh: false});
+      await pumpEventQueue();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      expect(walletState.amount.toSat(), 0,
+          reason: 'a bool payload must not trigger any refresh');
+      expect(walletState.transactions, isEmpty,
+          reason: 'a bool payload must not trigger a history re-read');
     });
   });
 }

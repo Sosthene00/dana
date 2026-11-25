@@ -65,8 +65,8 @@ class SynchronizationTaskHandler extends TaskHandler {
         _endHeight = null;
         FlutterForegroundTask.sendDataToMain({bgKeyComplete: ok});
       },
-      onStateUpdated: (lastSyncOnly) async =>
-          FlutterForegroundTask.sendDataToMain({bgKeyRefresh: lastSyncOnly}),
+      onStateUpdated: (kind) async =>
+          FlutterForegroundTask.sendDataToMain({bgKeyRefresh: kind.wireName}),
     );
     unawaited(_engine!.trySync());
 
@@ -154,13 +154,14 @@ class SynchronizationTaskHandler extends TaskHandler {
         frigateState: serviceFrigateState,
         writerLease: WriterLease(writerId: WriterLease.serviceWriterId),
         // graduation moved satoshis into owned_outputs — the app refreshes
-        // the confirmed balance from the repository. NOTE: the flag is
-        // `lastSyncOnly` (sync_service passes it straight to
+        // the confirmed balance from the repository. NOTE: the kind is
+        // [RefreshKind.lastSyncOnly] (sync_service passes it straight to
         // WalletState.refreshAfterSync, which skips the DB re-read when
-        // true) — graduation must request a FULL refresh (false) or the
-        // balance never repaints after a phase-2/history write.
-        onGraduated: () =>
-            FlutterForegroundTask.sendDataToMain({bgKeyRefresh: false}),
+        // set) — graduation must request a FULL refresh
+        // (RefreshKind.full) or the balance never repaints after a
+        // phase-2/history write.
+        onGraduated: () => FlutterForegroundTask.sendDataToMain(
+            {bgKeyRefresh: RefreshKind.full.wireName}),
         // every processed event may have changed the candidate registry —
         // the app re-reads it from the DB (B2.2) and applies the lifecycle
         // snapshot (bar/banner, B4.3/B4.4).

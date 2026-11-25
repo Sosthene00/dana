@@ -96,8 +96,17 @@ class SyncService {
 
     // walletState update
     if (data.containsKey(bgKeyRefresh)) {
-      final lastSyncOnly = data[bgKeyRefresh] as bool;
-      unawaited(_walletState.refreshAfterSync(lastSyncOnly: lastSyncOnly));
+      final kind = RefreshKind.tryFromWire(data[bgKeyRefresh]);
+      if (kind == null) {
+        Logger().e('invalid bgKeyRefresh payload: ${data[bgKeyRefresh]}');
+      } else {
+        switch (kind) {
+          case RefreshKind.full:
+            unawaited(_walletState.refreshAfterSync(lastSyncOnly: false));
+          case RefreshKind.lastSyncOnly:
+            unawaited(_walletState.refreshAfterSync(lastSyncOnly: true));
+        }
+      }
     }
   }
 

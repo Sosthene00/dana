@@ -56,6 +56,44 @@ const String bgKeyStartHeight = 'startHeight';
 const String bgKeyEndHeight = 'endHeight';
 const String bgKeyComplete = 'complete';
 const String bgKeyRefresh = 'refresh';
+
+/// Typed refresh request crossing the foreground-service -> main isolate
+/// boundary on [bgKeyRefresh]. Replaces the untyped bool that previously
+/// rode this key: sender and receiver could attach different meanings to
+/// the same bool across the Map<String, dynamic> boundary — the root
+/// cause class of the 4494028 stale-balance bug.
+enum RefreshKind {
+  /// Re-read owned outputs, history and balance from the DB (full repaint;
+  /// what frigate graduation must request).
+  full,
+
+  /// Skip the DB re-read; only the in-memory last-sync state is refreshed.
+  lastSyncOnly;
+
+  /// Wire encoding across the isolate boundary: enums are not sendable
+  /// across isolate ports, so the kind travels as its name string inside
+  /// the message map.
+  String get wireName {
+    switch (this) {
+      case RefreshKind.full:
+        return 'full';
+      case RefreshKind.lastSyncOnly:
+        return 'lastSyncOnly';
+    }
+  }
+
+  /// Parses a wire payload; returns null for anything that is not a valid
+  /// kind name (untyped payloads from a stale sender are dropped, never
+  /// misinterpreted as a kind).
+  static RefreshKind? tryFromWire(Object? raw) {
+    if (raw is! String) return null;
+    for (final kind in RefreshKind.values) {
+      if (kind.wireName == raw) return kind;
+    }
+    return null;
+  }
+}
+
 const String bgKeyInterrupt = 'interrupt';
 const String bgKeyFatalError = 'fatalError';
 

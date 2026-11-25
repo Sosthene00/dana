@@ -31,8 +31,10 @@ class SyncEngine {
   /// on error so callers can deactivate progress indicators in both cases.
   final void Function(bool success) onSyncComplete;
 
-  /// Called after each [StateUpdate] to refresh UI state from the DB.
-  final Future<void> Function(bool lastSyncOnly) onStateUpdated;
+  /// Called after each [StateUpdate] to refresh UI state from the DB. The
+  /// kind is typed ([RefreshKind]) so no sender can smuggle an untyped flag
+  /// with ad-hoc semantics across the isolate boundary.
+  final Future<void> Function(RefreshKind kind) onStateUpdated;
 
   final String _logTag;
 
@@ -105,9 +107,9 @@ class SyncEngine {
     await _walletRepository.saveLastSync(event.blkheight);
 
     if (event.foundOutputs.isNotEmpty || event.foundInputs.isNotEmpty) {
-      await onStateUpdated(false);
+      await onStateUpdated(RefreshKind.full);
     } else {
-      await onStateUpdated(true);
+      await onStateUpdated(RefreshKind.lastSyncOnly);
     }
   }
 

@@ -1,3 +1,4 @@
+import 'package:danawallet/constants.dart';
 import 'package:danawallet/services/sync_engine.dart';
 import 'package:danawallet/states/sync_progress_state.dart';
 import 'package:danawallet/states/wallet_state.dart';
@@ -19,8 +20,8 @@ class InProcessSyncService {
             syncProgress.activate(start, end);
           },
           onSyncComplete: (success) => syncProgress.deactivate(success),
-          onStateUpdated: (lastSyncOnly) =>
-              walletState.refreshAfterSync(lastSyncOnly: lastSyncOnly),
+          onStateUpdated: (kind) => walletState.refreshAfterSync(
+              lastSyncOnly: kind == RefreshKind.lastSyncOnly),
         );
 
   Future<void> trySync() => _engine.trySync();
