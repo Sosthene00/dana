@@ -54,8 +54,10 @@ CandidateObservation classifyHistory(
 /// notification additionally reconciles over-cap and stale (>10 min)
 /// pending candidates (B3.8 timeout path).
 class FrigateConfirmationMonitor {
-  /// B3.7: hard cap on concurrent scripthash subscriptions.
-  static const int maxSubscriptions = 1024;
+  /// B3.7: hard cap on concurrent scripthash subscriptions (spec constant).
+  /// Tests may lower it via the [FrigateConfirmationMonitor.maxSubscriptions]
+  /// constructor parameter to exercise the over-cap polling fallback.
+  static const int maxSubscriptionsDefault = 1024;
 
   /// B3.8: pending candidates older than this are reconciled on every new
   /// electrum block (fallback for missed notifications).
@@ -73,6 +75,11 @@ class FrigateConfirmationMonitor {
   /// Called when a candidate graduated into `owned_outputs` (B3.3) — the
   /// wallet state refreshes its confirmed balance from the repository.
   final void Function()? onGraduated;
+
+  /// Hard cap of concurrent scripthash subscriptions (B3.7): defaults to
+  /// [maxSubscriptionsDefault] (1024); lower it in tests to exercise the
+  /// over-cap per-block polling fallback cheaply.
+  final int maxSubscriptions;
 
   /// Delay before a reconnect attempt after a disconnect (B3.7 rebuild).
   final Duration reconnectDelay;
@@ -106,6 +113,7 @@ class FrigateConfirmationMonitor {
     this.clientFactory,
     this.onChanged,
     this.onGraduated,
+    this.maxSubscriptions = maxSubscriptionsDefault,
     this.reconnectDelay = const Duration(seconds: 5),
     this.nowMillis,
     this.writerLease,

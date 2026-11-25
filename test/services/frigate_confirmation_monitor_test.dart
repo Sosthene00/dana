@@ -37,6 +37,7 @@ FrigateCandidate candidate({
   int vout = 0,
   int amountSat = 1500,
   List<int>? script,
+  int firstSeen = 1000,
 }) {
   return FrigateCandidate(
     txid: txid,
@@ -44,7 +45,7 @@ FrigateCandidate candidate({
     tweak: Uint8List.fromList(List.filled(32, 7)),
     script: Uint8List.fromList(script ?? [0x51, 0x20, 0xaa]),
     amountSat: amountSat,
-    firstSeen: 1000,
+    firstSeen: firstSeen,
     source: 'frigate-mempool',
   );
 }
@@ -138,11 +139,18 @@ void main() {
       await db.close();
     });
 
-    FrigateConfirmationMonitor makeMonitor({void Function()? onGraduated}) {
+    FrigateConfirmationMonitor makeMonitor({
+      void Function()? onGraduated,
+      int? maxSubscriptions,
+      int Function()? nowMillis,
+    }) {
       return FrigateConfirmationMonitor(
         clientFactory: (endpoint) async => ElectrumClient.connect(endpoint,
             timeout: const Duration(seconds: 5)),
         onGraduated: onGraduated,
+        maxSubscriptions: maxSubscriptions ??
+            FrigateConfirmationMonitor.maxSubscriptionsDefault,
+        nowMillis: nowMillis,
         reconnectDelay: const Duration(milliseconds: 20),
       );
     }
@@ -164,13 +172,13 @@ void main() {
       await monitor.stop();
     });
 
-    test('no configured electrum endpoint falls back to the frigate URL '
+    test(
+        'no configured electrum endpoint falls back to the frigate URL '
         '(interim default until the R7 endpoint UI)', () async {
       // The frigate backend IS an electrum endpoint (the B5.1 probe
       // handshakes server.version against the same host:port), so with no
       // `frigateelectrumurl` the monitor must reuse the frigate URL.
-      await SharedPreferencesAsync()
-          .setString('frigateurl', '127.0.0.1:$port');
+      await SharedPreferencesAsync().setString('frigateurl', '127.0.0.1:$port');
 
       final c = candidate();
       await FrigateCandidatesRepository.instance.upsertCandidate(c);
@@ -435,6 +443,281 @@ void main() {
             .length;
         return subscribes > firstSubscribes;
       });
+      await monitor.stop();
+    });
+
+    test('no electrum endpoint configured: phase 3 does not start (B3.6)',
+        () async {
+      // Neither `frigateelectrumurl` nor `frigateurl` is set (prefs are
+      // cleared in setUp): the monitor must not start at all — no client
+      // built, no connection, no subscription — the condition is logged,
+      // and candidates stay pending until an endpoint is configured.
+      final c = candidate(script: [0x51, 0x20, 0x77]);
+      await FrigateCandidatesRepository.instance.upsertCandidate(c);
+
+      var factoryCalls = 0;
+      final monitor = FrigateConfirmationMonitor(
+        clientFactory: (endpoint) async {
+          factoryCalls++;
+          return ElectrumClient.connect(endpoint,
+              timeout: const Duration(seconds: 5));
+        },
+        reconnectDelay: const Duration(milliseconds: 20),
+      );
+      await monitor.start();
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+
+      expect(factoryCalls, 0,
+          reason: 'monitor must not build any electrum client when no '
+              'endpoint is configured');
+      expect(server.requestMethods, isEmpty,
+          reason: 'no electrum connection may be opened');
+      final row = await FrigateCandidatesRepository.instance
+          .getCandidate(c.txid, c.vout);
+      expect(row?.status, FrigateCandidateStatus.pending,
+          reason: 'candidates stay pending without an endpoint');
+      expect(await FrigateCandidatesRepository.instance.getPendingBalance(),
+          c.amountSat);
+      await monitor.stop();
+    });
+
+    test(
+        'subscription cap: over-cap candidates poll get_history, never '
+        'silently dropped (B3.7)', () async {
+      expect(FrigateConfirmationMonitor.maxSubscriptionsDefault, 1024,
+          reason: 'B3.7 hard-cap spec constant');
+
+      final c1 = candidate(
+          txid: '11' * 32, script: [0x51, 0x20, 0x81], firstSeen: 1000);
+      final c2 = candidate(
+          txid: '22' * 32, script: [0x51, 0x20, 0x82], firstSeen: 2000);
+      final c3 = candidate(
+          txid: '33' * 32, script: [0x51, 0x20, 0x83], firstSeen: 3000);
+      for (final c in [c1, c2, c3]) {
+        await FrigateCandidatesRepository.instance.upsertCandidate(c);
+      }
+      final shByScript = {
+        for (final c in [c1, c2, c3]) electrumScripthash(c.script): c,
+      };
+
+      // Every candidate's tx is in the mempool: polling keeps them pending
+      // (an empty history would drop them — correct O2 rule, wrong fixture).
+      server.handler = (method, params) {
+        switch (method) {
+          case 'server.version':
+            return ['MockElectrum 1.0', '1.4'];
+          case 'blockchain.scripthash.subscribe':
+            return null;
+          case 'blockchain.scripthash.get_history':
+            final c = shByScript[params.first as String]!;
+            return [
+              {'height': 0, 'tx_hash': c.txid},
+            ];
+          default:
+            throw Exception('unexpected method $method');
+        }
+      };
+
+      // Cap lowered to 2: exactly two pendings subscribe, the third is
+      // beyond the cap and must fall back to per-block polling.
+      final monitor = makeMonitor(maxSubscriptions: 2);
+      await monitor.start(endpoint: '127.0.0.1:$port');
+
+      final allScripts = shByScript.keys.toSet();
+      final subscribed = server
+          .paramsFor('blockchain.scripthash.subscribe')
+          .toSet()
+          .intersection(allScripts);
+      expect(subscribed, hasLength(2),
+          reason: 'the cap bounds the live subscription set');
+      final overCap = allScripts.difference(subscribed);
+      expect(overCap, hasLength(1));
+      expect(server.paramsFor('blockchain.scripthash.get_history'),
+          containsAll(overCap),
+          reason: 'beyond-cap candidate is reconciled via get_history '
+              'polling, not dropped');
+
+      // Never silently dropped: all three stay pending.
+      for (final c in [c1, c2, c3]) {
+        final row = await FrigateCandidatesRepository.instance
+            .getCandidate(c.txid, c.vout);
+        expect(row?.status, FrigateCandidateStatus.pending,
+            reason: '${c.txid} must stay pending (polled, not dropped)');
+      }
+      expect(await FrigateCandidatesRepository.instance.getPendingBalance(),
+          c1.amountSat + c2.amountSat + c3.amountSat);
+      await monitor.stop();
+    });
+
+    test(
+        'RBF replacement: replaced candidate drops, replacement stays '
+        'pending — no zombie (B3.8)', () async {
+      // The RBF replacement re-pays the same derived output: same script
+      // (same scripthash), new txid -> new outpoint. Phase 2 upserts the
+      // replacement candidate; phase 3 must drop the replaced tx's row on
+      // the scripthash status change and keep the replacement pending.
+      const replacedTxid = _txid;
+      final replacementTxid = 'bb' * 32;
+      final script = [0x51, 0x20, 0x91];
+      final replaced = candidate(txid: replacedTxid, script: script);
+      await FrigateCandidatesRepository.instance.upsertCandidate(replaced);
+      final sh = electrumScripthash(Uint8List.fromList(script));
+
+      server.handler = (method, params) {
+        switch (method) {
+          case 'server.version':
+            return ['MockElectrum 1.0', '1.4'];
+          case 'blockchain.scripthash.subscribe':
+            return 'pre-rbf-status';
+          case 'blockchain.scripthash.get_history':
+            return [
+              {'height': 0, 'tx_hash': replacedTxid}, // pre-RBF mempool
+            ];
+          default:
+            throw Exception('unexpected method $method');
+        }
+      };
+
+      final monitor = makeMonitor();
+      await monitor.start(endpoint: '127.0.0.1:$port');
+      await waitUntil(
+          'initial subscribe',
+          () async => server.requestMethods
+              .contains('blockchain.scripthash.subscribe'));
+
+      // RBF: the replaced tx vanishes from the mempool, the replacement
+      // appears; phase 2 upserts the new candidate (new outpoint) and the
+      // monitor re-syncs.
+      final replacement =
+          candidate(txid: replacementTxid, vout: 0, script: script);
+      await FrigateCandidatesRepository.instance.upsertCandidate(replacement);
+      server.handler = (method, params) {
+        switch (method) {
+          case 'server.version':
+            return ['MockElectrum 1.0', '1.4'];
+          case 'blockchain.scripthash.subscribe':
+            return 'post-rbf-status';
+          case 'blockchain.scripthash.get_history':
+            return [
+              {'height': 0, 'tx_hash': replacementTxid}, // replacement only
+            ];
+          default:
+            throw Exception('unexpected method $method');
+        }
+      };
+      await monitor.registerCandidates();
+      server.pushNotification(
+          'blockchain.scripthash.subscribe', [sh, 'post-rbf-status']);
+
+      await waitUntil(
+          'replaced candidate dropped',
+          () async =>
+              (await FrigateCandidatesRepository.instance
+                      .getCandidate(replacedTxid, 0))
+                  ?.status ==
+              FrigateCandidateStatus.dropped);
+
+      // The replacement is alive and pending; the replaced row is no
+      // zombie: dropped, out of the pending balance, no owned state.
+      final row = await FrigateCandidatesRepository.instance
+          .getCandidate(replacementTxid, 0);
+      expect(row?.status, FrigateCandidateStatus.pending);
+      expect(await FrigateCandidatesRepository.instance.getPendingBalance(),
+          replacement.amountSat);
+      final owned = await db
+          .query('owned_outputs', where: 'txid = ?', whereArgs: [replacedTxid]);
+      expect(owned, isEmpty);
+      await monitor.stop();
+    });
+
+    test(
+        'block/10-minute reconciliation: stale pending is reconciled on a '
+        'new block, fresh pending is not (B3.8)', () async {
+      const now = 1700000000000;
+      // Stale: older than the 10-minute window. Fresh: inside it.
+      final stale = candidate(
+          txid: 'cc' * 32,
+          script: [0x51, 0x20, 0xa1],
+          firstSeen: now - 11 * 60 * 1000);
+      final fresh = candidate(
+          txid: 'dd' * 32,
+          script: [0x51, 0x20, 0xa2],
+          firstSeen: now - 60 * 1000);
+      await FrigateCandidatesRepository.instance.upsertCandidate(stale);
+      await FrigateCandidatesRepository.instance.upsertCandidate(fresh);
+
+      final shStale = electrumScripthash(stale.script);
+      final shFresh = electrumScripthash(fresh.script);
+      // Both txs are in the mempool at start (nothing to reconcile yet).
+      server.handler = (method, params) {
+        switch (method) {
+          case 'server.version':
+            return ['MockElectrum 1.0', '1.4'];
+          case 'blockchain.scripthash.subscribe':
+            return 'mempool-status';
+          case 'blockchain.scripthash.get_history':
+            final txid =
+                (params.first as String) == shStale ? stale.txid : fresh.txid;
+            return [
+              {'height': 0, 'tx_hash': txid},
+            ];
+          default:
+            throw Exception('unexpected method $method');
+        }
+      };
+
+      final monitor = makeMonitor(nowMillis: () => now);
+      await monitor.start(endpoint: '127.0.0.1:$port');
+      await waitUntil(
+          'initial subscribes',
+          () async =>
+              server
+                  .paramsFor('blockchain.scripthash.subscribe')
+                  .contains(shStale) &&
+              server
+                  .paramsFor('blockchain.scripthash.subscribe')
+                  .contains(shFresh));
+
+      // A block is mined: the stale candidate's tx is now confirmed; the
+      // fresh candidate's tx has vanished (it would be evicted if the
+      // block path reconciled it — it must not).
+      server.handler = (method, params) {
+        switch (method) {
+          case 'server.version':
+            return ['MockElectrum 1.0', '1.4'];
+          case 'blockchain.scripthash.subscribe':
+            return 'mempool-status';
+          case 'blockchain.scripthash.get_history':
+            if (params.first as String == shStale) {
+              return [
+                {'height': 900, 'tx_hash': stale.txid},
+              ];
+            }
+            return const [];
+          default:
+            throw Exception('unexpected method $method');
+        }
+      };
+      server.pushNotification('blockchain.headers.subscribe', [
+        {'height': 900, 'hex': '00'},
+      ]);
+
+      // The stale pending is reconciled against the fresh chain state…
+      await waitUntil(
+          'stale candidate graduated',
+          () async =>
+              (await FrigateCandidatesRepository.instance
+                      .getCandidate(stale.txid, 0))
+                  ?.status ==
+              FrigateCandidateStatus.confirmed);
+      final owned = await db
+          .query('owned_outputs', where: 'txid = ?', whereArgs: [stale.txid]);
+      expect(owned, hasLength(1));
+      // …while the fresh pending is NOT reconciled on the block path: its
+      // (evicted) chain state is untouched — the staleness gate holds.
+      final freshRow = await FrigateCandidatesRepository.instance
+          .getCandidate(fresh.txid, 0);
+      expect(freshRow?.status, FrigateCandidateStatus.pending);
       await monitor.stop();
     });
   });
