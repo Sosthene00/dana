@@ -638,3 +638,52 @@ async fn rig_b81_three_phase_acceptance() {
     drop(s4);
     log_evidence("done", "acceptance driver finished");
 }
+
+// ---------------------------------------------------------------------------
+// Device-UI acceptance leg (t_66016976) — closes the acceptance loop AT THE UI.
+//
+// The wire-level tests above stop at "receipts in owned_outputs", which was
+// green on 2026-11-25 while the phone screen showed balance 0 (both bugs lived
+// between DB-correct and UI-reflects-it). This leg drives the on-device
+// Transact tab over adb (Pixel 6a emulator rig) via the python driver
+// `rust/tests/rig_b81_device_ui.py` and is part of this acceptance script's
+// PASS criteria: a DB-green/UI-zero run FAILS the acceptance, not just warns.
+//
+// Stages (env RIG_B81_UI_STAGE, default `full`):
+//   control — positive control on a stale-UI build: pay, mine, verify the DB
+//     receipt lands (DB-green), then REQUIRE the UI assertion to FAIL. If the
+//     UI ever reflects the payment, the control is useless and this test
+//     fails — the alarm that the assertion no longer bites.
+//   full — faucet payment -> DB receipt -> UI balance>0 + incoming tx visible
+//     LIVE (no restart; the 4494028 class) -> survives app kill + relaunch
+//     with the balance intact.
+//
+// Run (code host, rig up, device attached, dev package installed):
+//   RIG_B81_UI_STAGE=control cargo test --test rig_b81_acceptance \
+//     rig_b81_device_ui -- --ignored --nocapture
+//   RIG_B81_UI_STAGE=full   cargo test --test rig_b81_acceptance \
+//     rig_b81_device_ui -- --ignored --nocapture
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore = "requires the regtest rig AND the emulator device over adb (Pixel 6a rig)"]
+fn rig_b81_device_ui_acceptance() {
+    let stage = std::env::var("RIG_B81_UI_STAGE").unwrap_or_else(|_| "full".into());
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/rig_b81_device_ui.py");
+    let out = Command::new("python3")
+        .arg(script)
+        .arg("--stage")
+        .arg(&stage)
+        .output()
+        .expect("spawn device-UI driver (python3)");
+    println!("--- rig_b81_device_ui.py (stage {stage}) ---");
+    print!("{}", String::from_utf8_lossy(&out.stdout));
+    eprint!("{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "device-UI acceptance leg FAILED (stage {stage}): the UI assertion must \
+         bite on a stale-UI build (control) and the full chain payment -> DB \
+         receipt -> live UI balance>0 + incoming tx -> intact after restart \
+         must hold on the acceptance build"
+    );
+}
