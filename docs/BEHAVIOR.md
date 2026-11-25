@@ -325,3 +325,67 @@ undrafted or unratified items remain; section 9 is retained as a ratification re
 Coin control; multi-backend simultaneous operation; Tor; frigate 1.6 / dual-shape subscribe
 response handling (spdk follow-up PR territory); incoming-payment push notifications (the
 unconfirmed balance line covers v1 visibility).
+
+
+## 11. B-rule traceability — covering test per rule
+
+**Convention (binding):** a NEW or AMENDED B-rule must cite its covering test
+(`file::test name`) in the SAME change that adds or amends it — a rule that ships without a
+covering citation is an incomplete change. The periodic audit pass re-walks this table and
+flags every rule whose row is UNCOVERED or whose cited test no longer exists; uncovered rules
+are filed as follow-up cards, never silently accepted. Rules whose cover is an acceptance run
+or the rig harness cite those instead of a unit test. A rule row may cite several tests when
+the rule has independently testable legs; a leg with no cover is noted in the row as PARTIAL
+(a PARTIAL row is treated as UNCOVERED for the uncovered leg).
+
+Every backticked citation below is fully qualified as `path::test-name` and is checked for
+existence by the audit pass.
+
+| Rule | Covering test (file::name) |
+| --- | --- |
+| B1.1 | PARTIAL — test/services/sync_engine_backend_gate_test.dart::blindbit committed (positive control): the heartbeat scans (blindbit wake-cycle scan shape unchanged); backend-default selection leg UNCOVERED |
+| B1.2 | `test/services/sync_engine_backend_gate_test.dart::frigate committed: one heartbeat does no blindbit work` |
+| B1.3 | UNCOVERED — no test exercises the wake path (lib/services/sync_task_handler.dart) |
+| B1.4 | PARTIAL — `test/services/sync_engine_backend_gate_test.dart::frigate committed: one heartbeat does no blindbit work` (no sync-state DB write on the frigate path, so the blindbit checkpoint is never written by it) + `test/repositories/frigate_candidates_test.dart::candidate rows never appear in owned_outputs` |
+| B1.5 | PARTIAL — `test/services/sync_engine_backend_gate_test.dart::blindbit committed (positive control): the heartbeat scans` (frigate -> blindbit switch-back: the blindbit engine resumes untouched); blindbit -> frigate start_height leg UNCOVERED |
+| B2.1 | UNCOVERED — foreground-service lifecycle (start on wallet start, survives main-app death) has no test |
+| B2.2 | `test/services/frigate_event_handler_test.dart::R3: a Confirmed history event writes the receipt into owned_outputs` + `test/services/frigate_event_handler_test.dart::B3.1: an Unconfirmed event creates pending candidate rows` + `test/services/sync_service_refresh_contract_test.dart::graduation message (bgKeyRefresh: full) triggers a full DB re-read` (the app READS, does not rescan) |
+| B2.3 | `test/services/writer_lease_test.dart::a live foreign writer holds the lease — the caller stays read-only` |
+| B2.4 | `test/services/frigate_event_handler_test.dart::B3.4: a re-delivered Confirmed event (history replay / re-subscribe) counts exactly once` + `test/services/frigate_event_handler_test.dart::B3.4: a re-delivered mempool snapshot (re-subscribe) does not double-count`; the Disconnected trigger is exercised at the wire level by `rust/tests/rig_b81_acceptance.rs::rig_b81_three_phase_acceptance` (held subscription observes Disconnected after frigate restart) |
+| B2.5 | UNCOVERED — service-death re-establishment on next start has no test (device-level; see B8.3) |
+| B2.6 | PARTIAL — `test/states/frigate_state_test.dart::hidden at CaughtUp, and the value is reset (never stale)` (CaughtUp reported to the UI); "stays subscribed / mempool leg continues" is exercised by `rust/tests/rig_b81_acceptance.rs::rig_b81_three_phase_acceptance` (held subscription live during the graduation window) but has no dedicated Dart test |
+| B2.7 | UNCOVERED — "Rust = fixed scanner surface only / no new Rust surface" is asserted nowhere |
+| B2.8 | `test/services/writer_lease_test.dart::stale foreign lease (>= 10 s, two missed heartbeats) is taken over` + `test/services/writer_lease_test.dart::staleness boundary: 9.9 s is fresh, 10 s is stale` + `test/services/writer_lease_test.dart::renew refreshes our own heartbeat only` + `test/services/writer_lease_test.dart::a foreign holder cannot renew a lease it does not own` + `test/services/writer_lease_test.dart::an Unconfirmed event is written after taking over a stale lease` |
+| B3.1 | `test/services/frigate_event_handler_test.dart::B3.1: an Unconfirmed event creates pending candidate rows` + `test/repositories/frigate_candidates_test.dart::frigate_candidates table exists with the B3.1 fields` |
+| B3.2 | `test/repositories/frigate_candidates_test.dart::candidate rows never appear in owned_outputs` + `test/services/frigate_confirmation_monitor_test.dart::txid in a mempool entry (height <= 0) stays pending` |
+| B3.3 | `test/services/frigate_confirmation_monitor_test.dart::txid in a confirmed entry graduates` + `test/services/frigate_confirmation_monitor_test.dart::confirmation notification graduates into owned_outputs exactly once (B3.3/B3.4)` + `test/services/sync_service_refresh_contract_test.dart::graduation message (bgKeyRefresh: full) triggers a full DB re-read` |
+| B3.4 | `test/services/frigate_event_handler_test.dart::B3.4: a re-delivered mempool snapshot (re-subscribe) does not double-count` + `test/services/frigate_event_handler_test.dart::B3.4: a re-delivered Confirmed event (history replay / re-subscribe) counts exactly once` + `test/repositories/frigate_candidates_test.dart::re-upserting the same outpoint keeps a single row` |
+| B3.5 | `test/services/frigate_confirmation_monitor_test.dart::evicted txid drops the candidate, no state is created (B3.5/O2)` + `test/repositories/frigate_candidates_test.dart::pending -> dropped` |
+| B3.6 | `test/services/frigate_confirmation_monitor_test.dart::no configured electrum endpoint falls back to the frigate URL ` + `test/services/frigate_confirmation_monitor_test.dart::an explicit frigateelectrumurl wins over the frigate URL fallback` (R13 default + override); the "neither configured -> monitor does not start (logged)" leg UNCOVERED |
+| B3.7 | `test/services/frigate_confirmation_monitor_test.dart::subscribes the scripthash of every pending candidate on start (B3.7)` + `test/services/frigate_confirmation_monitor_test.dart::never subscribes confirmed or dropped candidates` + `test/services/frigate_confirmation_monitor_test.dart::reconnect rebuilds the subscription set from the registry (B3.7)`; the 1024-subscription cap / per-block polling fallback leg UNCOVERED |
+| B3.8 | `test/services/frigate_confirmation_monitor_test.dart::evicted txid drops the candidate, no state is created (B3.5/O2)` + `test/repositories/frigate_candidates_test.dart::re-delivered mempool entry reactivates a dropped outpoint`; the RBF-replacement leg and the block/10-minute reconciliation fallback leg UNCOVERED |
+| B4.1 | `test/states/frigate_state_test.dart::B4.1: with no candidates the unconfirmed balance is absent (null)` + `test/states/frigate_state_test.dart::B4.1: pending candidates sum into the unconfirmed balance` + `test/widgets/unconfirmed_balance_line_test.dart::B4.1: with no pending candidates the line is absent (not zero)` + `test/widgets/unconfirmed_balance_line_test.dart::B4.1: renders the pending amount with an unconfirmed label` |
+| B4.2 | `test/states/frigate_state_test.dart::B4.2/B3.2: only pending candidates count; confirmed/dropped never`; the "never included in send-availability checks" leg is B6.1's UNCOVERED row |
+| B4.3 | `test/states/frigate_state_test.dart::indeterminate until the first progress report; Tip shows the bar` + `test/states/frigate_state_test.dart::determinate from scanner-reported heights (Confirmed vs Tip)` + `test/states/frigate_state_test.dart::hidden at CaughtUp, and the value is reset (never stale)` + `test/states/frigate_state_test.dart::mempool (Unconfirmed) and Spent events never touch the bar` |
+| B4.4 | `test/states/frigate_state_test.dart::a Disconnected event shows the banner` + `test/states/frigate_state_test.dart::the banner clears on the next successful interaction (Tip)` + `test/states/frigate_state_test.dart::a failed start marks the backend unreachable` + `test/services/frigate_url_probe_test.dart::server rejecting server.version: human-readable probe error` (human-readable errors) |
+| B5.1 | `test/services/frigate_url_probe_test.dart::reachable server: completes, handshake is server.version FIRST` + `test/services/frigate_url_probe_test.dart::malformed URLs fail as parse errors (B5.1)` + `test/services/frigate_url_probe_test.dart::unreachable port: probe error, message is human-readable` + `test/widgets/frigate_backend_screen_test.dart::B5.1 regression: a probe failure on a public save shows the inline error and saves nothing (no warning either)` |
+| B5.2 | `test/services/frigate_warning_gate_test.dart::private declaration (B5.2 default): proceed` + `test/repositories/frigate_disclosure_test.dart::default is PRIVATE — public is always opt-in` + `test/widgets/frigate_backend_screen_test.dart::B5.2 (R11): a successful Frigate save starts the subscription in-session — the post-ack trigger needs no restart` |
+| B5.3 | `test/widgets/frigate_backend_screen_test.dart::B5.3 (R12): public save fires the warning AT SAVE; "No" aborts with the old settings fully intact` + `test/services/frigate_warning_gate_test.dart::public, unacked (pre-ruling state): warning fires once, held` |
+| B5.4 | `test/widgets/frigate_backend_screen_test.dart::B5.4/B8.4 (R12): "Yes" at save persists ack + URL + declaration and writes the disclosure record AT SAVE TIME` + `test/widgets/frigate_backend_screen_test.dart::B5.4/J1 (R12): an already-acked wallet saves another public URL without ever re-firing the warning` + `test/services/frigate_warning_gate_test.dart::public, already acked: proceed, no warning (B5.4 never again)` + `test/repositories/frigate_disclosure_test.dart::ack persists` |
+| B5.5 | UNCOVERED — "no silent fallback / foreign tips rejected" has no test |
+| B6.1 | UNCOVERED — send-availability from confirmed balance only is untested |
+| B6.2 | UNCOVERED — carried contract, not covered by this suite |
+| B6.3 | UNCOVERED — carried contract, not covered by this suite |
+| B7.1 | PARTIAL — covered component-wise (the B2.4 and B4.4 rows above); the service-death leg (B2.5) is UNCOVERED, so the end-to-end "no lost receipts in all three cases" claim rests on `rust/tests/rig_b81_acceptance.rs::rig_b81_three_phase_acceptance` (disconnect leg only) |
+| B7.2 | PARTIAL — `test/services/writer_lease_test.dart::a fresh APP lease does not count as a service claim` (write takeover never races the service); the forced-kill device scenario is B8.3's UNCOVERED row |
+| B8.1 | `rust/tests/rig_b81_acceptance.rs::rig_b81_three_phase_acceptance` — B8.5 steps 1-6 end to end at the wire level (ignored-by-default rig test, run with cargo test --test rig_b81_acceptance -- --ignored; evidence at /tmp/r10a-evidence/rig_events.jsonl) |
+| B8.2 | UNCOVERED — the hard gate is a process/acceptance gate; no test asserts the monitor never ships without the electrum path |
+| B8.3 | UNCOVERED — no device acceptance run (force-stop kill window) is recorded in this suite |
+| B8.4 | `test/widgets/frigate_backend_screen_test.dart::B5.4/B8.4 (R12): "Yes" at save persists ack + URL + declaration and writes the disclosure record AT SAVE TIME` + `test/services/frigate_warning_gate_test.dart::public, already acked: proceed, no warning (B5.4 never again)` + `test/repositories/frigate_disclosure_test.dart::entries survive wallet reset (permanent record)` |
+| B8.5 | `rust/tests/rig_b81_acceptance.rs::rig_b81_three_phase_acceptance` executes steps 1-6; step 7 (the B8.3 force-stop leg) UNCOVERED |
+
+Uncovered/PARTIAL rows at the time of writing: B1.1 (default leg), B1.3, B1.4 (shared-layer
+leg), B1.5 (start_height leg), B2.1, B2.5, B2.6 (stays-subscribed leg), B2.7, B3.6 (no-endpoint
+leg), B3.7 (cap leg), B3.8 (RBF + reconciliation legs), B4.2 (send-availability leg), B5.5,
+B6.1, B6.2, B6.3, B7.1 (service-death leg), B7.2 (device leg), B8.2, B8.3, B8.5 (step 7).
+These are follow-up card candidates, not gaps to fill in this change.
