@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:danawallet/constants.dart';
+import 'package:flutter/foundation.dart';
 import 'package:danawallet/services/foreground_sync_service.dart';
 import 'package:danawallet/services/in_process_sync_service.dart';
 import 'package:danawallet/states/chain_state.dart';
@@ -66,6 +67,13 @@ class SyncService {
     );
     return;
   }
+
+  /// test seam: deliver a data message exactly as the foreground-task plugin
+  /// would from the background isolate (direct mirror of _onServiceData).
+  /// Unit tests use this to pin the isolate-boundary refresh contract
+  /// without spinning up the foreground service.
+  @visibleForTesting
+  void handleServiceData(Object data) => _onServiceData(data);
 
   void _onServiceData(Object data) {
     if (data is! Map) return;
