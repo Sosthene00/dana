@@ -154,9 +154,13 @@ class SynchronizationTaskHandler extends TaskHandler {
         frigateState: serviceFrigateState,
         writerLease: WriterLease(writerId: WriterLease.serviceWriterId),
         // graduation moved satoshis into owned_outputs — the app refreshes
-        // the confirmed balance from the repository.
+        // the confirmed balance from the repository. NOTE: the flag is
+        // `lastSyncOnly` (sync_service passes it straight to
+        // WalletState.refreshAfterSync, which skips the DB re-read when
+        // true) — graduation must request a FULL refresh (false) or the
+        // balance never repaints after a phase-2/history write.
         onGraduated: () =>
-            FlutterForegroundTask.sendDataToMain({bgKeyRefresh: true}),
+            FlutterForegroundTask.sendDataToMain({bgKeyRefresh: false}),
         // every processed event may have changed the candidate registry —
         // the app re-reads it from the DB (B2.2) and applies the lifecycle
         // snapshot (bar/banner, B4.3/B4.4).
