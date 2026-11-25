@@ -132,6 +132,12 @@ class SynchronizationTaskHandler extends TaskHandler {
   }
 
   Future<void> _ensureInit() {
+    // FRB forbids initializing twice (it throws "Should not initialize
+    // flutter_rust_bridge twice"); skip when the entrypoint is already up
+    // instead of crashing the service.
+    if (RustLib.instance.initialized) {
+      return Future.value();
+    }
     _initFuture ??= RustLib.init();
     return _initFuture!;
   }
