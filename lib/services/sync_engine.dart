@@ -124,6 +124,17 @@ class SyncEngine {
         return;
       }
 
+      // B1.2: the frigate path is subscription-driven end to end — NO
+      // Dana-initiated batch scan. When frigate is the committed backend
+      // the blindbit engine stays off; the frigate subscription (which
+      // owns the writer lease, B2.3) delivers all state itself.
+      if (await SettingsRepository.instance.getChainBackend() ==
+          ChainBackendKind.frigate) {
+        Logger().i('[$_logTag] frigate backend committed, blindbit scan '
+            'skipped (B1.2: subscription-driven, no batch scan)');
+        return;
+      }
+
       final network = await _walletRepository.readNetwork();
       final settings = SettingsRepository.instance;
       final blindbitUrl =
