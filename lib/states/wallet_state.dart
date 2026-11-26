@@ -4,7 +4,6 @@ import 'package:danawallet/data/models/bip353_address.dart';
 import 'package:danawallet/exceptions.dart';
 import 'package:danawallet/extensions/bip321_uri.dart';
 import 'package:danawallet/extensions/date_time.dart';
-import 'package:danawallet/extensions/network.dart';
 import 'package:danawallet/generated/rust/api/structs/amount.dart';
 import 'package:danawallet/generated/rust/api/structs/input_selection.dart';
 import 'package:danawallet/generated/rust/api/structs/outpoint.dart';
@@ -20,10 +19,10 @@ import 'package:danawallet/generated/rust/api/wallet/setup.dart';
 import 'package:danawallet/repositories/mempool_api_repository.dart';
 import 'package:danawallet/repositories/owned_outputs_repository.dart';
 import 'package:danawallet/repositories/frigate_candidates_repository.dart';
-import 'package:danawallet/repositories/settings_repository.dart';
 import 'package:danawallet/repositories/transactions_repository.dart';
 import 'package:danawallet/repositories/wallet_repository.dart';
 import 'package:danawallet/services/bip353_resolver.dart';
+import 'package:danawallet/services/broadcast_router.dart';
 import 'package:danawallet/services/dana_address_service.dart';
 import 'package:danawallet/utils/coin_selection.dart';
 import 'package:flutter/material.dart';
@@ -330,28 +329,19 @@ class WalletState extends ChangeNotifier {
 
     String txid;
     try {
-      switch (network) {
-        case Network.mainnet:
-          txid = await SpWallet.broadcastTx(tx: signedTx, network: network);
-          break;
-        case Network.signet:
-          txid = await MempoolApiRepository(network: network)
-              .postTransaction(signedTx);
-          break;
-        case Network.regtest:
-          final blindbitUrl =
-              await SettingsRepository.instance.getBlindbitUrl() ??
-                  Network.regtest.defaultBlindbitUrl;
-          txid = await SpWallet.broadcastUsingBlindbit(
-              blindbitUrl: blindbitUrl, tx: signedTx);
-          break;
-        default:
-          throw Exception("Unsupported network");
-      }
+      // R14/B1.2: the broadcast follows the SINGLE committed backend
+      // decision — a frigate-backend wallet broadcasts through the frigate
+      // electrum endpoint, never through a network-default blindbit URL
+      // (the pre-fix bug returned an empty body and dropped the signed tx).
+      txid = await broadcastSignedTx(signedTx, network);
     } catch (e) {
       Logger().e('Failed to broadcast transaction: $e');
+      // Re-throw so the send screen surfaces the failure as user-visible
+      // state: the tx stays signed-but-not-broadcast and the user can
+      // retry. Never log-and-drop a signed transaction.
       throw Exception(
-          'Unable to broadcast transaction. Please check your connection and try again.');
+          'Unable to broadcast transaction. Please check your connection and '
+          'try again. ($e)');
     }
 
     await transactionsRepository.addOutgoingTransaction(

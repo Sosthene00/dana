@@ -222,6 +222,21 @@ class ElectrumClient {
     await _call('blockchain.headers.subscribe', const []);
   }
 
+  /// Broadcast a raw transaction (hex) via
+  /// `blockchain.transaction.broadcast` and return the txid the server
+  /// reports. This is the frigate-backend broadcast path (R14/B1.2:
+  /// broadcast follows the committed backend decision). A server rejection
+  /// (non-standard tx, fee too low, already in the mempool) surfaces as a
+  /// catchable [ElectrumServerException] — never a silent drop.
+  Future<String> broadcast(String txHex) async {
+    final result = await _call('blockchain.transaction.broadcast', [txHex]);
+    if (result is String && result.isNotEmpty) {
+      return result;
+    }
+    throw ElectrumServerException(
+        'unexpected blockchain.transaction.broadcast reply: $result');
+  }
+
   Future<void> close() async {
     final wasClosed = _closed;
     _closed = true;
