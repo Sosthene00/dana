@@ -5,6 +5,7 @@ import 'package:danawallet/constants.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
 import 'package:danawallet/services/foreground_sync_service.dart';
 import 'package:danawallet/services/frigate_subscription_controller.dart';
+import 'package:danawallet/services/service_liveness.dart';
 import 'package:danawallet/services/sync_engine.dart';
 import 'package:danawallet/services/sync_host.dart';
 import 'package:danawallet/services/writer_lease.dart';
@@ -45,6 +46,16 @@ class SyncService {
   SyncScanner Function(ChainBackendKind kind, WriterLease lease)?
       debugBuildScanner;
 
+  /// Test seam: replaces the app-host stand-down probe (the service-claim
+  /// liveness watch).
+  @visibleForTesting
+  Future<bool> Function()? debugStandDownProbe;
+
+  /// Test seam: whether the in-process host currently holds the writer
+  /// lease (a stand-down releases it).
+  @visibleForTesting
+  bool get debugAppHostRunning => _appHost?.isRunning ?? false;
+
   SyncService({
     required ChainState chainState,
     required SyncProgressState syncProgress,
@@ -53,6 +64,7 @@ class SyncService {
     this.debugIsAndroid,
     this.debugServiceClaimProbe,
     this.debugBuildScanner,
+    this.debugStandDownProbe,
   })  : _chainState = chainState,
         _syncProgress = syncProgress,
         _walletState = walletState,
@@ -96,6 +108,16 @@ class SyncService {
     _appHost = SyncHost(
       lease: WriterLease(writerId: WriterLease.appWriterId),
       buildScanner: debugBuildScanner ?? _buildAppScanner,
+      // App-host stand-down (review blocker B1): while we hold the lease,
+      // watch for the service writer's claim. The service is the sole
+      // writer while alive (B2.3) — when it claims, stop our scanner and
+      // release the lease so its acquisition retry succeeds.
+      standDownProbe:
+          android ? (debugStandDownProbe ?? _serviceWriterClaimed) : null,
+      onStandDown: () {
+        _foregroundHost = true;
+        _appHost = null;
+      },
     );
     final acquired = await _appHost!.start();
     if (!acquired) {
@@ -103,6 +125,11 @@ class SyncService {
     }
     await _alignWakePoller();
   }
+
+  /// The foreground-service isolate announced itself while we hold the
+  /// writer lease (review blocker B1): the service is live and waiting for
+  /// its slot.
+  Future<bool> _serviceWriterClaimed() => ServiceLiveness.isFresh();
 
   /// Stop the occupant and start the scanner for the committed backend.
   /// The in-process host does this directly. Otherwise the request goes to

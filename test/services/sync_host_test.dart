@@ -13,6 +13,7 @@ import 'package:danawallet/generated/rust/frb_generated.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
 import 'package:danawallet/repositories/wallet_repository.dart';
 import 'package:danawallet/repositories/writer_lease_repository.dart';
+import 'package:danawallet/services/service_liveness.dart';
 import 'package:danawallet/services/sync_engine.dart';
 import 'package:danawallet/services/sync_host.dart';
 import 'package:danawallet/services/sync_service.dart';
@@ -98,7 +99,8 @@ class _RustApi implements RustLibApi {
       true;
 
   @override
-  Future<int> crateApiChainGetChainHeight({required String blindbitUrl}) async =>
+  Future<int> crateApiChainGetChainHeight(
+          {required String blindbitUrl}) async =>
       50;
 
   @override
@@ -263,6 +265,156 @@ void main() {
 
       expect(built, isEmpty);
       expect(service.debugIsAndroid, isTrue);
+    });
+  });
+
+  group('lease handoff (review blocker B1: one-shot service acquisition)', () {
+    late Database db;
+    late Directory tmpDir;
+
+    setUp(() async {
+      await SharedPreferencesAsync().clear();
+      await SharedPreferencesAsync().setString(_keyNetwork, 'regtest');
+
+      tmpDir = await Directory.systemTemp.createTemp('sync-handoff-');
+      db = await databaseFactoryFfi.openDatabase('${tmpDir.path}/test.db');
+      await db.execute('PRAGMA foreign_keys = ON');
+      await applyMigrations(db);
+      WriterLeaseRepository.testDatabaseOverride = () async => db;
+    });
+
+    tearDown(() async {
+      WriterLeaseRepository.testDatabaseOverride = null;
+      await db.close();
+      await tmpDir.delete(recursive: true);
+    });
+
+    Future<void> waitFor(bool Function() cond,
+        {String reason = 'condition'}) async {
+      final end = DateTime.now().add(const Duration(seconds: 10));
+      while (!cond()) {
+        if (DateTime.now().isAfter(end)) fail('$reason within 10 s');
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+      }
+    }
+
+    test(
+        'service host retries while the app host holds the lease and takes '
+        'over once the app host observes the service claim (stand-down)',
+        () async {
+      final appLog = <String>[];
+      final serviceLog = <String>[];
+      var blockedAttempts = 0;
+
+      // App host becomes the writer first (service down at app start).
+      final appHost = SyncHost(
+        lease: WriterLease(writerId: WriterLease.appWriterId),
+        buildScanner: (kind, _) => _FakeScanner(kind, appLog),
+        standDownProbe: () => ServiceLiveness.isFresh(),
+        standDownInterval: const Duration(milliseconds: 10),
+      );
+      expect(await appHost.start(), isTrue);
+      expect(appLog, ['blindbit.start']);
+
+      // The service isolate starts while the app host is live: the one-shot
+      // acquisition fails, so it retries with backoff and advertises itself
+      // (liveness marker) on every blocked attempt.
+      final serviceHost = SyncHost(
+        lease: WriterLease(writerId: WriterLease.serviceWriterId),
+        buildScanner: (kind, _) => _FakeScanner(kind, serviceLog),
+        acquirePolicy: const LeaseAcquirePolicy(
+          initialDelay: Duration(milliseconds: 10),
+          maxDelay: Duration(milliseconds: 10),
+        ),
+        onAcquireBlocked: (attempt) async {
+          blockedAttempts = attempt;
+          await ServiceLiveness.mark();
+        },
+      );
+
+      final serviceStart = serviceHost.start();
+      await waitFor(() => serviceHost.isRunning,
+          reason: 'the service host never took over the writer lease');
+      await serviceStart;
+
+      // The handoff happened: the app host stood down...
+      expect(appHost.isRunning, isFalse);
+      expect(appHost.stoodDown, isTrue);
+      expect(appLog, [
+        'blindbit.start',
+        'blindbit.stop-begin',
+        'blindbit.stop-end',
+      ]);
+      // ...released the lease, and the service owns it with a live scanner.
+      final row = await WriterLeaseRepository.instance.read();
+      expect(row, isNotNull);
+      expect(row!.writerId, WriterLease.serviceWriterId);
+      expect(serviceLog, ['blindbit.start']);
+      expect(blockedAttempts, greaterThanOrEqualTo(1),
+          reason: 'the service must have been blocked before the handoff');
+
+      await appHost.stop();
+      await serviceHost.stop();
+    });
+
+    test('a bounded retry policy gives up after maxAttempts with no scanner',
+        () async {
+      final serviceLog = <String>[];
+      final attempts = <int>[];
+
+      // A fresh foreign (app) lease blocks every attempt.
+      await WriterLeaseRepository.instance.write(
+          WriterLease.appWriterId, DateTime.now().millisecondsSinceEpoch);
+
+      final serviceHost = SyncHost(
+        lease: WriterLease(writerId: WriterLease.serviceWriterId),
+        buildScanner: (kind, _) => _FakeScanner(kind, serviceLog),
+        acquirePolicy: const LeaseAcquirePolicy(
+          maxAttempts: 3,
+          initialDelay: Duration(milliseconds: 5),
+          maxDelay: Duration(milliseconds: 5),
+        ),
+        onAcquireBlocked: (attempt) async => attempts.add(attempt),
+      );
+
+      expect(await serviceHost.start(), isFalse);
+      expect(attempts, [1, 2, 3]);
+      expect(serviceLog, isEmpty,
+          reason: 'a blocked service host must not start a scanner');
+      expect(serviceHost.isRunning, isFalse);
+    });
+
+    test('app host stands down when the service claims (B2.3 sole writer)',
+        () async {
+      final built = <ChainBackendKind>[];
+      final service = SyncService(
+        chainState: ChainState(),
+        frigateState: FrigateState(),
+        syncProgress: SyncProgressState.create(),
+        walletState: WalletState.create(),
+        debugIsAndroid: true,
+        // Service down at app start: the claim probe times out, the app
+        // isolate becomes the writer.
+        debugServiceClaimProbe: () async => false,
+        debugBuildScanner: (kind, _) {
+          built.add(kind);
+          return _FakeScanner(kind, []);
+        },
+        debugStandDownProbe: () => ServiceLiveness.isFresh(),
+      );
+
+      await service.startInProcess();
+      expect(service.debugAppHostRunning, isTrue);
+      expect(built, [ChainBackendKind.blindbit]);
+
+      // The service isolate comes alive and waits for the lease.
+      await ServiceLiveness.mark();
+
+      await waitFor(() => !service.debugAppHostRunning,
+          reason: 'the app host did not stand down to the service claim');
+      final row = await WriterLeaseRepository.instance.read();
+      expect(row, isNull,
+          reason: 'the stand-down must release the lease for the service');
     });
   });
 

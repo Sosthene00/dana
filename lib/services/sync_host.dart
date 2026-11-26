@@ -88,6 +88,34 @@ class FrigateScanner implements SyncScanner {
   Future<void> stop({bool drain = true}) => _controller.stopSubscription();
 }
 
+/// Lease-acquisition retry policy (review blocker B1: one-shot acquisition
+/// left a live service scannerless forever).
+///
+/// [SyncHost] with a policy retries `tryAcquire` with exponential backoff
+/// (`initialDelay`, grown by `backoffMultiplier`, capped at `maxDelay`)
+/// until it succeeds or `maxAttempts` is exhausted (`null` = retry while
+/// the host runs — a live service never gives up its one slot). Without a
+/// policy the host attempts exactly once (the app isolate keeps its
+/// one-shot semantics; its handoff to the service is the stand-down watch).
+class LeaseAcquirePolicy {
+  const LeaseAcquirePolicy({
+    this.maxAttempts,
+    this.initialDelay = const Duration(seconds: 5),
+    this.backoffMultiplier = 2,
+    this.maxDelay = const Duration(seconds: 30),
+  });
+
+  /// Total acquisition attempts; `null` = unbounded.
+  final int? maxAttempts;
+
+  /// Delay before the second attempt (the first is immediate).
+  final Duration initialDelay;
+
+  final double backoffMultiplier;
+
+  final Duration maxDelay;
+}
+
 /// One writer, one scanner.
 ///
 /// Acquires [lease] before it reads the committed backend, then starts that
@@ -97,27 +125,83 @@ class SyncHost {
   SyncHost({
     required this.lease,
     required this.buildScanner,
+    this.acquirePolicy,
+    this.onAcquireBlocked,
+    this.standDownProbe,
+    this.onStandDown,
+    this.standDownInterval = const Duration(seconds: 5),
   });
 
   final WriterLease lease;
   final SyncScanner Function(ChainBackendKind kind, WriterLease lease)
       buildScanner;
 
+  /// Retry policy for lease acquisition (service host). `null` = one-shot.
+  final LeaseAcquirePolicy? acquirePolicy;
+
+  /// Called after every blocked acquisition attempt (with the attempt
+  /// number, 1-based). The service host uses this to mark its liveness so
+  /// the app host can stand down.
+  final Future<void> Function(int attempt)? onAcquireBlocked;
+
+  /// App-host stand-down probe (B2.3 handoff): when it returns true the
+  /// host stops its scanner and releases the lease so the service writer
+  /// can take over. `null` disables the watch (service host never stands
+  /// down to the app).
+  final Future<bool> Function()? standDownProbe;
+
+  /// Called after a stand-down completed (scanner stopped, lease released).
+  final void Function()? onStandDown;
+
+  /// How often the stand-down probe runs while the host holds the lease.
+  final Duration standDownInterval;
+
   SyncScanner? _scanner;
   bool _running = false;
+  bool _stoodDown = false;
+  bool _abortAcquire = false;
+  Timer? _standDownTimer;
 
   SyncScanner? get scanner => _scanner;
   bool get isRunning => _running;
 
+  /// True when this host observed the service writer's claim and stepped
+  /// down (stopped the scanner, released the lease).
+  bool get stoodDown => _stoodDown;
+
   /// Become the writer and start the committed scanner. Returns false when
-  /// a live foreign writer holds the lease — this isolate stays read-only
-  /// and starts nothing.
+  /// a live foreign writer holds the lease and no retry policy is configured
+  /// (or the retry budget is exhausted) — this isolate stays read-only and
+  /// starts nothing.
   Future<bool> start() async {
     if (_running) return true;
-    if (!await lease.tryAcquire()) return false;
+    if (!await _acquireLease()) return false;
     _running = true;
+    _startStandDownWatch();
     await _occupy();
     return true;
+  }
+
+  /// Acquire the lease, retrying per [acquirePolicy] while blocked.
+  Future<bool> _acquireLease() async {
+    final policy = acquirePolicy;
+    var delay = policy?.initialDelay ?? Duration.zero;
+    var attempt = 0;
+    while (true) {
+      if (_abortAcquire) return false;
+      if (await lease.tryAcquire()) return true;
+      attempt++;
+      await onAcquireBlocked?.call(attempt);
+      if (policy == null) return false;
+      if (policy.maxAttempts != null && attempt >= policy.maxAttempts!) {
+        return false;
+      }
+      await Future<void>.delayed(delay);
+      delay = Duration(
+          milliseconds:
+              (delay.inMilliseconds * policy.backoffMultiplier).round());
+      if (delay > policy.maxDelay) delay = policy.maxDelay;
+    }
   }
 
   /// Stop the occupant, re-read the committed backend, start that scanner.
@@ -137,6 +221,9 @@ class SyncHost {
   /// Stop the occupant and release the lease. [drain] false skips waiting
   /// out an in-flight Blindbit scan (service timeout reclaim).
   Future<void> stop({bool drain = true}) async {
+    _abortAcquire = true;
+    _standDownTimer?.cancel();
+    _standDownTimer = null;
     await _scanner?.stop(drain: drain);
     _scanner = null;
     _running = false;
@@ -152,5 +239,30 @@ class SyncHost {
     } catch (e, st) {
       Logger().e('sync host: $kind scanner failed to start: $e\n$st');
     }
+  }
+
+  /// Watch for the service writer's claim while we hold the lease (app-host
+  /// stand-down, B2.3 handoff). The probe is checked once immediately (a
+  /// service may have claimed before we started) and then every
+  /// [standDownInterval].
+  void _startStandDownWatch() {
+    if (standDownProbe == null) return;
+    _stoodDown = false;
+    _standDownTimer =
+        Timer.periodic(standDownInterval, (_) => unawaited(_checkStandDown()));
+    unawaited(_checkStandDown());
+  }
+
+  Future<void> _checkStandDown() async {
+    final probe = standDownProbe;
+    if (!_running || _stoodDown || probe == null) return;
+    if (!await probe()) return;
+    _stoodDown = true;
+    _standDownTimer?.cancel();
+    _standDownTimer = null;
+    Logger().i('sync host: service writer claim observed — standing down, '
+        'releasing the lease (B2.3)');
+    await stop();
+    onStandDown?.call();
   }
 }

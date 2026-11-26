@@ -5,6 +5,7 @@ import 'package:danawallet/generated/rust/frb_generated.dart';
 import 'package:danawallet/generated/rust/api/wallet.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
 import 'package:danawallet/services/frigate_subscription_controller.dart';
+import 'package:danawallet/services/service_liveness.dart';
 import 'package:danawallet/services/sync_engine.dart';
 import 'package:danawallet/services/sync_host.dart';
 import 'package:danawallet/services/writer_lease.dart';
@@ -53,11 +54,26 @@ class SynchronizationTaskHandler extends TaskHandler {
     _host = SyncHost(
       lease: WriterLease(writerId: WriterLease.serviceWriterId),
       buildScanner: _buildScanner,
+      // Retry with backoff (review blocker B1): the acquisition attempt at
+      // service start is no longer the service's only chance for its whole
+      // lifetime. Unbounded — a live service never gives up its one slot;
+      // when the app host observes our liveness marker it stands down and
+      // releases the lease, and the next retry acquires it (B2.3 handoff).
+      acquirePolicy: const LeaseAcquirePolicy(
+        initialDelay: Duration(seconds: 5),
+        backoffMultiplier: 2,
+        maxDelay: Duration(seconds: 15),
+      ),
+      onAcquireBlocked: (attempt) async {
+        Logger().w('[BG] writer lease held by a live writer — acquisition '
+            'attempt $attempt blocked, retrying (B2.3)');
+        await ServiceLiveness.mark();
+      },
     );
     final acquired = await _host!.start();
     if (!acquired) {
-      Logger().w('[BG] writer lease held by a live writer — service starts '
-          'no scanner (B2.3)');
+      Logger().w('[BG] writer lease still held after the retry budget — '
+          'service starts no scanner (B2.3)');
     }
   }
 
