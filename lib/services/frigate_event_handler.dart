@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:danawallet/generated/rust/api/structs/frigate_event.dart';
+import 'package:danawallet/generated/rust/api/structs/outpoint.dart';
 import 'package:danawallet/generated/rust/api/structs/owned_output.dart';
 import 'package:danawallet/repositories/frigate_candidates_repository.dart';
 import 'package:danawallet/repositories/wallet_repository.dart';
@@ -25,7 +26,18 @@ import 'package:logger/logger.dart';
 /// exactly once). A confirmed outpoint that still sits as a pending
 /// candidate leaves the unconfirmed line (B4.1) — it is confirmed state now.
 ///
-/// Phase scope: Spent/Disconnected touch no state here — the catch-up bar
+/// The SPENT leg (B1.4): `Spent` events write the same confirmed-state layer
+/// the blindbit sync engine writes — `tx_spent_outpoints` — so balance
+/// semantics are backend-independent. A spend of a pending outgoing
+/// transaction confirms it (at the last seen Tip height — the scanner's
+/// Spent event carries no block height); a spend with no matching outgoing
+/// transaction records an unknown-spend row (foreign broadcast, e.g. a
+/// multi-wallet import), exactly as SyncEngine._onSyncResult does. A
+/// re-delivered Spent (a re-subscribe's history sweep re-detects the same
+/// spend) dedupes on the outpoint (B3.4: counted exactly once). The spent
+/// leg never advances the checkpoint (R14 stays where it is).
+///
+/// Phase scope: Disconnected touches no state here — the catch-up bar
 /// and the unreachable banner are lifecycle UI state (B4.3/B4.4, handled by
 /// FrigateState.applyLifecycle); graduation of mempool candidates is phase 3
 /// (B3.3, electrum confirmation alone). R14: Tip/CaughtUp advance the SHARED
@@ -70,6 +82,10 @@ class FrigateEventHandler {
   /// so quiet blocks advance the checkpoint only here).
   int? _lastTipHeight;
 
+  /// Last block hash reported by a Tip event — the Spent leg's confirmation
+  /// blockhash (the scanner's Spent event carries no block data of its own).
+  String? _lastTipHash;
+
   FrigateEventHandler({
     FrigateCandidatesRepository? candidatesRepository,
     OwnedOutputsRepository? ownedOutputsRepository,
@@ -98,10 +114,11 @@ class FrigateEventHandler {
           :final foundOutputs
         ):
         await _recordConfirmedReceipts(blkheight, blkhash, foundOutputs);
-      case FrigateEventDto_Tip(:final height):
+      case FrigateEventDto_Tip(:final height, :final hash):
         // R14: remember the tip so the following CaughtUp can advance the
         // shared checkpoint to it (CaughtUp itself carries no height).
         _lastTipHeight = height;
+        _lastTipHash = hash;
       case FrigateEventDto_CaughtUp():
         // R14: the history replay is complete — everything through the last
         // seen tip is synced, so the shared checkpoint may move there.
@@ -109,10 +126,86 @@ class FrigateEventHandler {
         if (tip != null) {
           await _walletRepository.advanceLastSync(tip);
         }
-      case FrigateEventDto_Spent():
+      case FrigateEventDto_Spent(:final outpoints):
+        await _recordSpentOutpoints(outpoints);
       case FrigateEventDto_Disconnected():
-        // lifecycle-only events (see class doc); sync state is untouched.
+        // lifecycle-only event (see class doc); sync state is untouched.
         break;
+    }
+  }
+
+  /// Spent leg (B1.4): write the scanner-reported spends through the EXISTING
+  /// confirmed-state path, exactly as the blindbit sync engine does for its
+  /// foundInputs: a pending outgoing transaction that spent the outpoint is
+  /// confirmed; a spend with no matching transaction records an
+  /// unknown-spend row (foreign broadcast). The scanner's Spent event carries
+  /// no block height, so the confirmation leg uses the last seen Tip
+  /// (height + hash — always the first event of every subscription); without
+  /// a tip the spend is still recorded, unconfirmed. A re-delivered Spent
+  /// (re-subscribe's history sweep) dedupes on the outpoint (B3.4). The
+  /// checkpoint never moves here (R14).
+  Future<void> _recordSpentOutpoints(List<OutPoint> outpoints) async {
+    if (outpoints.isEmpty) return;
+    // B2.8: the lease check sits inside the sync-state write path — a live
+    // foreign writer must never see this registry written concurrently.
+    await writerLease?.ensureOwnership();
+    final height = _lastTipHeight;
+    final hash = _lastTipHash;
+    if (height == null || hash == null) {
+      Logger().w(
+          'frigate spent leg: no Tip seen yet — spends recorded without a confirmation height');
+    }
+
+    final unknownSpends = <OutPoint>[];
+    for (final outpoint in outpoints) {
+      if (height != null && hash != null) {
+        // Confirm the pending outgoing transaction that spent the outpoint.
+        // This is also the B3.4 dedupe for a re-delivered Spent event: any
+        // already-recorded spend (pending OR unknown-spend row) matches here
+        // and the UPDATE re-applies the same confirmation — no second row.
+        final confirmed =
+            await _transactionsRepository.confirmOutgoingTransaction(
+          confirmedOutpointTxid: outpoint.txid,
+          confirmedOutpointVout: outpoint.vout,
+          confirmationHeight: height,
+          confirmationBlockhash: hash,
+        );
+
+        // this output does not have an associated transaction — a foreign
+        // broadcast (e.g. the seed imported in multiple wallets); record it
+        // so the outpoint leaves the balance (same as SyncEngine
+        // ._onSyncResult's unknown-spend branch).
+        if (!confirmed) {
+          unknownSpends.add(outpoint);
+        }
+      } else {
+        // No Tip seen: the confirmation leg cannot run, so the explicit
+        // outpoint dedupe guard keeps a re-delivered Spent from piling up
+        // unknown-spend rows.
+        if (await _transactionsRepository.isOutpointSpent(
+            outpoint.txid, outpoint.vout)) {
+          continue;
+        }
+        unknownSpends.add(outpoint);
+      }
+    }
+
+    if (unknownSpends.isNotEmpty) {
+      Logger().w(
+          'frigate spent leg: ${unknownSpends.length} spend(s) with no matching outgoing transaction, recording as unknown spends');
+      await _transactionsRepository.addOutgoingTransaction(
+        spentOutpoints: unknownSpends,
+        recipients: [],
+        txid: null,
+        confirmationHeight: height,
+        confirmationBlockhash: hash,
+      );
+    }
+    if (outpoints.isNotEmpty) {
+      Logger().i(
+          'frigate spent leg: ${outpoints.length} spent outpoint(s) written to tx_spent_outpoints (B1.4)');
+      onChanged?.call();
+      onConfirmed?.call();
     }
   }
 

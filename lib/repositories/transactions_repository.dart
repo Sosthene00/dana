@@ -147,6 +147,20 @@ class TransactionsRepository {
     return result;
   }
 
+  /// True when any outgoing transaction already records this outpoint as
+  /// spent. Dedupe guard for a re-delivered `Spent` event (a re-subscribe's
+  /// history sweep re-detects the same spend) — B3.4: counted exactly once.
+  Future<bool> isOutpointSpent(String txid, int vout) async {
+    final db = await _db;
+    final rows = await db.rawQuery('''
+      SELECT 1
+      FROM tx_spent_outpoints
+      WHERE outpoint_txid = ? AND outpoint_vout = ?
+      LIMIT 1
+    ''', [txid, vout]);
+    return rows.isNotEmpty;
+  }
+
   /// Get all transactions for UI display.
   Future<List<RecordedTransaction>> getAllTransactions(
       String receiveCode, String changeCode) async {

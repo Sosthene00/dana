@@ -144,16 +144,15 @@ void main() {
     });
 
     test(
-        'R3 scope: lifecycle events (Tip/CaughtUp/Disconnected/Spent) touch no state',
+        'R3 scope: lifecycle events (Tip/CaughtUp/Disconnected) touch no state',
         () async {
       await handler
           .handleEvent(const FrigateEventDto.tip(height: 100, hash: 'ab'));
       await handler.handleEvent(const FrigateEventDto.caughtUp());
       await handler.handleEvent(
           const FrigateEventDto.disconnected(reason: 'connection reset'));
-      await handler.handleEvent(const FrigateEventDto.spent(outpoints: [
-        OutPoint(txid: _txidA, vout: 0),
-      ]));
+      // Spent is no longer lifecycle-only — it writes the confirmed-state
+      // layer (B1.4); its behavior is covered by the 'spent leg (B1.4)' group.
 
       final rows = await db.query('frigate_candidates');
       expect(rows, isEmpty);
@@ -316,6 +315,173 @@ void main() {
         ownedOutput(txid: _txidA, vout: 0, amountSat: 1500),
       ]));
       expect(await walletRepo.readLastSync(), 15000);
+    });
+  });
+
+  // B1.4: "Both backends write the same confirmed-state layer (owned_outputs
+  // + tx_spent_outpoints); balance semantics are backend-independent." The
+  // blindbit path records spends (SyncEngine._onSyncResult foundInputs);
+  // the frigate path MUST do the same from the scanner's Spent events —
+  // the scanner carries no block height, so the confirmation leg uses the
+  // last seen Tip (height + hash, the first event of every subscription).
+  // The Spent leg never advances the checkpoint (R14 stays where it is).
+  group('FrigateEventHandler — spent leg (B1.4)', () {
+    late Database db;
+    late FrigateEventHandler handler;
+    late int changeCount;
+    late int confirmedCount;
+
+    const spendTxid =
+        'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
+    const spentOutpoint = OutPoint(txid: _txidA, vout: 0);
+
+    setUp(() async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      await db.execute('PRAGMA foreign_keys = ON');
+      await applyMigrations(db);
+      FrigateCandidatesRepository.testDatabaseOverride = () async => db;
+      OwnedOutputsRepository.testDatabaseOverride = () async => db;
+      TransactionsRepository.testDatabaseOverride = () async => db;
+      changeCount = 0;
+      confirmedCount = 0;
+      handler = FrigateEventHandler(
+        candidatesRepository: FrigateCandidatesRepository.instance,
+        onChanged: () => changeCount++,
+        onConfirmed: () => confirmedCount++,
+        nowMillis: () => 1700000000000,
+      );
+    });
+
+    tearDown(() async {
+      FrigateCandidatesRepository.testDatabaseOverride = null;
+      OwnedOutputsRepository.testDatabaseOverride = null;
+      TransactionsRepository.testDatabaseOverride = null;
+      await db.close();
+    });
+
+    Future<void> seedOwnedOutput({int amountSat = 100000}) async {
+      // owned_outputs carries a FK to transactions(txid) — record the
+      // incoming transaction that produced the output first.
+      await TransactionsRepository.instance.addIncomingTransaction(
+        txid: _txidA,
+        confirmationHeight: 14800,
+        confirmationBlockhash: 'seed',
+      );
+      await OwnedOutputsRepository.instance
+          .insertOutput(output: ownedOutput(amountSat: amountSat));
+    }
+
+    test(
+        'B1.4: a Spent event confirms a pending outgoing transaction (self-spend leg)',
+        () async {
+      await seedOwnedOutput();
+      // the Pay flow already recorded the outgoing tx (unconfirmed) with its
+      // spent outpoint; the scanner then reports the spend from history.
+      await TransactionsRepository.instance.addOutgoingTransaction(
+        txid: spendTxid,
+        spentOutpoints: [spentOutpoint],
+        recipients: [],
+      );
+      // the broadcast already wrote the spent outpoint, so the balance has
+      // already dropped — what the Spent leg adds is the CONFIRMATION of the
+      // outgoing transaction (height/hash), which the stub never wrote.
+      expect(
+          (await OwnedOutputsRepository.instance.getUnspentBalance()).field0,
+          BigInt.zero);
+
+      await handler
+          .handleEvent(const FrigateEventDto.tip(height: 14847, hash: 'hh'));
+      await handler
+          .handleEvent(const FrigateEventDto.spent(outpoints: [spentOutpoint]));
+
+      final tx = await db.query('transactions',
+          where: 'txid = ?', whereArgs: [spendTxid]);
+      expect(tx, hasLength(1));
+      expect(tx.first['confirmation_height'], 14847,
+          reason: 'the outgoing tx confirms at the last seen Tip height');
+      expect(tx.first['confirmation_blockhash'], 'hh');
+      final spent = await db.query('tx_spent_outpoints');
+      expect(spent, hasLength(1));
+      expect(spent.first['outpoint_txid'], _txidA);
+      expect(spent.first['outpoint_vout'], 0);
+      // device-observable (B1.4): the balance drops by the spent amount.
+      expect(
+          (await OwnedOutputsRepository.instance.getUnspentBalance()).field0,
+          BigInt.zero);
+      expect(confirmedCount, 1,
+          reason: 'the confirmed balance refreshes from the repository');
+      expect(changeCount, 1, reason: 'the UI state refreshes');
+    });
+
+    test(
+        'B1.4: a Spent event with no matching outgoing tx records an unknown spend',
+        () async {
+      // no outgoing tx row: the spend came from a foreign broadcast
+      // (multi-wallet import). The outpoint must still leave the balance.
+      await seedOwnedOutput();
+      expect(
+          (await OwnedOutputsRepository.instance.getUnspentBalance()).field0,
+          BigInt.from(100000));
+
+      await handler
+          .handleEvent(const FrigateEventDto.tip(height: 14847, hash: 'hh'));
+      await handler
+          .handleEvent(const FrigateEventDto.spent(outpoints: [spentOutpoint]));
+
+      final tx = await db.query('transactions', where: 'txid IS NULL');
+      expect(tx, hasLength(1));
+      expect(tx.first['txid'], isNull,
+          reason: 'mirrors the blindbit unknown-spend branch: txid null');
+      expect(tx.first['confirmation_height'], 14847);
+      expect(tx.first['confirmation_blockhash'], 'hh');
+      final spent = await db.query('tx_spent_outpoints');
+      expect(spent, hasLength(1));
+      expect(spent.first['outpoint_txid'], _txidA);
+      expect(spent.first['outpoint_vout'], 0);
+      expect(
+          (await OwnedOutputsRepository.instance.getUnspentBalance()).field0,
+          BigInt.zero,
+          reason: 'balance drops by the spent amount (B1.4)');
+      expect(confirmedCount, 1);
+      expect(changeCount, 1);
+    });
+
+    test(
+        'B3.4: a re-delivered Spent event (re-subscribe history sweep) records exactly once',
+        () async {
+      await seedOwnedOutput();
+      await handler
+          .handleEvent(const FrigateEventDto.tip(height: 14847, hash: 'hh'));
+      const event = FrigateEventDto.spent(outpoints: [spentOutpoint]);
+      await handler.handleEvent(event);
+      await handler.handleEvent(event);
+
+      final tx = await db.query('transactions', where: 'txid IS NULL');
+      expect(tx, hasLength(1),
+          reason: 'one outgoing row, not one per delivery');
+      final spent = await db.query('tx_spent_outpoints');
+      expect(spent, hasLength(1), reason: 'one spent row (B3.4 dedupe)');
+      expect(
+          (await OwnedOutputsRepository.instance.getUnspentBalance()).field0,
+          BigInt.zero);
+    });
+
+    test(
+        'a Spent event before any Tip still records the spend (unconfirmed height)',
+        () async {
+      await seedOwnedOutput();
+      await handler
+          .handleEvent(const FrigateEventDto.spent(outpoints: [spentOutpoint]));
+
+      final tx = await db.query('transactions', where: 'txid IS NULL');
+      expect(tx, hasLength(1));
+      expect(tx.first['confirmation_height'], isNull,
+          reason: 'no tip seen — the spend is recorded, height unknown');
+      final spent = await db.query('tx_spent_outpoints');
+      expect(spent, hasLength(1));
+      expect(
+          (await OwnedOutputsRepository.instance.getUnspentBalance()).field0,
+          BigInt.zero);
     });
   });
 }
