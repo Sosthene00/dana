@@ -1,0 +1,71 @@
+# B2.7 golden manifest — the FIXED Rust scanner surface (BEHAVIOR.md §11 B2.7).
+# One entry per bridge-exposed item: <path-relative-to-src/api>::[Type::]name.
+# Any addition to the Rust surface fails rust/tests/surface_golden_test.rs
+# until it is deliberately, reviewably added here.
+# FRB-derived auto-accessors/Default impls (not source items) are pinned by
+# test/services/rust_surface_golden_test.dart.
+bip321.rs::parse_payment_uri
+bip39.rs::get_english_wordlist
+chain.rs::check_network
+chain.rs::get_chain_height
+simple.rs::init_app
+stream.rs::create_broadcast_stream
+stream.rs::create_frigate_event_stream
+stream.rs::create_log_stream
+stream.rs::create_sync_progress_stream
+stream.rs::create_sync_result_stream
+structs/amount.rs::Amount::zero
+structs/input_selection.rs::InputSelection::actual_fee_rate
+structs/input_selection.rs::InputSelection::change
+structs/input_selection.rs::InputSelection::fee
+structs/input_selection.rs::InputSelection::n_sent_outputs
+structs/input_selection.rs::InputSelection::sent
+structs/input_selection.rs::InputSelection::strategy
+structs/recipient.rs::PaymentCode::encode
+structs/recipient.rs::PaymentCode::is_valid_for_network
+structs/recipient.rs::PaymentCode::kind
+structs/recipient.rs::PaymentCode::matches
+structs/recipient.rs::PaymentCode::parse
+structs/recipient.rs::PaymentCode::silent_payment_code
+structs/recipient.rs::Recipient::amount
+structs/recipient.rs::Recipient::new
+structs/recipient.rs::Recipient::payment_code
+structs/silent_payment_code.rs::SilentPaymentCode::encode
+structs/silent_payment_code.rs::SilentPaymentCode::is_valid_for_network
+structs/silent_payment_code.rs::SilentPaymentCode::m_pubkey
+structs/silent_payment_code.rs::SilentPaymentCode::matches
+structs/silent_payment_code.rs::SilentPaymentCode::network
+structs/silent_payment_code.rs::SilentPaymentCode::parse
+structs/silent_payment_code.rs::SilentPaymentCode::scan_key
+structs/silent_payment_code.rs::SilentPaymentCode::to_payment_code
+structs/silent_payment_code.rs::SilentPaymentCode::version
+structs/unsigned_transaction.rs::SilentPaymentUnsignedTransaction::actual_fee_rate
+structs/unsigned_transaction.rs::SilentPaymentUnsignedTransaction::get_change_amount
+structs/unsigned_transaction.rs::SilentPaymentUnsignedTransaction::get_fee_amount
+structs/unsigned_transaction.rs::SilentPaymentUnsignedTransaction::get_recipients
+structs/unsigned_transaction.rs::SilentPaymentUnsignedTransaction::get_send_amount
+structs/unsigned_transaction.rs::SilentPaymentUnsignedTransaction::recipients
+structs/unsigned_transaction.rs::SilentPaymentUnsignedTransaction::selected_utxos
+wallet.rs::ApiScanKey::decode
+wallet.rs::ApiScanKey::encode
+wallet.rs::ApiSpendKey::decode
+wallet.rs::ApiSpendKey::encode
+wallet.rs::SpWallet::get_scan_key
+wallet.rs::SpWallet::get_spend_key
+wallet.rs::SpWallet::new
+wallet/coin_selection.rs::select_utxos_to_drain
+wallet/coin_selection.rs::select_utxos_to_spend
+wallet/frigate.rs::SpWallet::start_frigate_subscription
+wallet/frigate.rs::is_frigate_subscription_running
+wallet/frigate.rs::stop_frigate_subscription
+wallet/info.rs::SpWallet::get_change_address
+wallet/info.rs::SpWallet::get_network
+wallet/info.rs::SpWallet::get_receiving_address
+wallet/setup.rs::SpWallet::setup_wallet
+wallet/sync.rs::SpWallet::interrupt_sync
+wallet/sync.rs::SpWallet::sync_to_height
+wallet/transaction.rs::SpWallet::broadcast_tx
+wallet/transaction.rs::SpWallet::broadcast_using_blindbit
+wallet/transaction.rs::SpWallet::create_transaction_from_selection
+wallet/transaction.rs::SpWallet::finalize_transaction
+wallet/transaction.rs::SpWallet::sign_transaction

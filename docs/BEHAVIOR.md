@@ -354,7 +354,7 @@ existence by the audit pass.
 | B2.4 | `test/services/frigate_event_handler_test.dart::B3.4: a re-delivered Confirmed event (history replay / re-subscribe) counts exactly once` + `test/services/frigate_event_handler_test.dart::B3.4: a re-delivered mempool snapshot (re-subscribe) does not double-count`; the Disconnected trigger is exercised at the wire level by `rust/tests/rig_b81_acceptance.rs::rig_b81_three_phase_acceptance` (held subscription observes Disconnected after frigate restart) |
 | B2.5 | UNCOVERED — service-death re-establishment on next start has no test (device-level; see B8.3) |
 | B2.6 | PARTIAL — `test/states/frigate_state_test.dart::hidden at CaughtUp, and the value is reset (never stale)` (CaughtUp reported to the UI); "stays subscribed / mempool leg continues" is exercised by `rust/tests/rig_b81_acceptance.rs::rig_b81_three_phase_acceptance` (held subscription live during the graduation window) but has no dedicated Dart test |
-| B2.7 | UNCOVERED — "Rust = fixed scanner surface only / no new Rust surface" is asserted nowhere |
+| B2.7 | `rust/tests/surface_golden_test.rs::b27_rust_surface_matches_the_golden_manifest_exactly` + `test/services/rust_surface_golden_test.dart::B2.7: the Rust bridge surface matches the golden manifest exactly` (golden manifests pin the fixed scanner surface two ways: the source-level `pub fn` surface under `rust/src/api/**` and the full FRB-generated `debugName` set — incl. FRB-derived auto-accessors/Default impls that never appear as source items; surface growth fails naming the unexpected item, forcing a deliberate, reviewed manifest update) |
 | B2.8 | `test/services/writer_lease_test.dart::stale foreign lease (>= 10 s, two missed heartbeats) is taken over` + `test/services/writer_lease_test.dart::staleness boundary: 9.9 s is fresh, 10 s is stale` + `test/services/writer_lease_test.dart::renew refreshes our own heartbeat only` + `test/services/writer_lease_test.dart::a foreign holder cannot renew a lease it does not own` + `test/services/writer_lease_test.dart::an Unconfirmed event is written after taking over a stale lease` |
 | B3.1 | `test/services/frigate_event_handler_test.dart::B3.1: an Unconfirmed event creates pending candidate rows` + `test/repositories/frigate_candidates_test.dart::frigate_candidates table exists with the B3.1 fields` |
 | B3.2 | `test/repositories/frigate_candidates_test.dart::candidate rows never appear in owned_outputs` + `test/services/frigate_confirmation_monitor_test.dart::txid in a mempool entry (height <= 0) stays pending` |
@@ -385,6 +385,6 @@ existence by the audit pass.
 | B8.5 | `rust/tests/rig_b81_acceptance.rs::rig_b81_three_phase_acceptance` executes steps 1-6; step 7 (the B8.3 force-stop leg) UNCOVERED |
 
 Uncovered/PARTIAL rows at the time of writing: B1.4 (shared-layer
-leg), B2.1, B2.5, B2.6 (stays-subscribed leg), B2.7,
+leg), B2.1, B2.5, B2.6 (stays-subscribed leg),
 B6.2, B6.3, B7.1 (service-death leg), B7.2 (device leg), B8.2, B8.3, B8.5 (step 7).
 These are follow-up card candidates, not gaps to fill in this change.
