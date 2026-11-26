@@ -47,6 +47,14 @@ FrigateCandidate candidate({
   );
 }
 
+// B5.5: well-formed 64-hex block-hash fixtures — a real session tip
+// carries a 32-byte digest, and the B5.5 tip-source guard rejects
+// anything else.
+const _tipHashA =
+    '00000000000000000000000000000000000000000000000000000000000000aa';
+const _tipHashB =
+    '00000000000000000000000000000000000000000000000000000000000000bb';
+
 void main() {
   group('FrigateState', () {
     late Database db;
@@ -124,16 +132,18 @@ void main() {
 
     test('indeterminate until the first progress report; Tip shows the bar',
         () {
-      state.applyLifecycle(const FrigateEventDto.tip(height: 900, hash: 'ab'));
+      state.applyLifecycle(
+          const FrigateEventDto.tip(height: 900, hash: _tipHashA));
       expect(state.catchUpBarVisible, isTrue);
       expect(state.catchUpProgress, isNull,
           reason: 'indeterminate: the scanner has reported no progress yet');
     });
 
     test('determinate from scanner-reported heights (Confirmed vs Tip)', () {
-      state.applyLifecycle(const FrigateEventDto.tip(height: 900, hash: 'ab'));
+      state.applyLifecycle(
+          const FrigateEventDto.tip(height: 900, hash: _tipHashA));
       state.applyLifecycle(const FrigateEventDto.confirmed(
-          blkheight: 450, blkhash: 'ab', foundOutputs: []));
+          blkheight: 450, blkhash: _tipHashA, foundOutputs: []));
       expect(state.catchUpBarVisible, isTrue);
       expect(state.catchUpProgress, closeTo(0.5, 1e-9),
           reason: 'determinate from the scanner-reported blkheight, never '
@@ -141,28 +151,32 @@ void main() {
     });
 
     test('a later Tip re-arms the determinate denominator', () {
-      state.applyLifecycle(const FrigateEventDto.tip(height: 900, hash: 'ab'));
+      state.applyLifecycle(
+          const FrigateEventDto.tip(height: 900, hash: _tipHashA));
       state.applyLifecycle(const FrigateEventDto.confirmed(
-          blkheight: 450, blkhash: 'ab', foundOutputs: []));
-      state.applyLifecycle(const FrigateEventDto.tip(height: 1000, hash: 'cd'));
+          blkheight: 450, blkhash: _tipHashA, foundOutputs: []));
+      state.applyLifecycle(
+          const FrigateEventDto.tip(height: 1000, hash: _tipHashB));
       state.applyLifecycle(const FrigateEventDto.confirmed(
-          blkheight: 250, blkhash: 'cd', foundOutputs: []));
+          blkheight: 250, blkhash: _tipHashB, foundOutputs: []));
       expect(state.catchUpProgress, closeTo(0.25, 1e-9));
     });
 
     test('hidden at CaughtUp, and the value is reset (never stale)', () {
-      state.applyLifecycle(const FrigateEventDto.tip(height: 900, hash: 'ab'));
+      state.applyLifecycle(
+          const FrigateEventDto.tip(height: 900, hash: _tipHashA));
       state.applyLifecycle(const FrigateEventDto.confirmed(
-          blkheight: 450, blkhash: 'ab', foundOutputs: []));
+          blkheight: 450, blkhash: _tipHashA, foundOutputs: []));
       state.applyLifecycle(const FrigateEventDto.caughtUp());
       expect(state.catchUpBarVisible, isFalse);
       expect(state.catchUpProgress, isNull);
     });
 
     test('mempool (Unconfirmed) and Spent events never touch the bar', () {
-      state.applyLifecycle(const FrigateEventDto.tip(height: 900, hash: 'ab'));
+      state.applyLifecycle(
+          const FrigateEventDto.tip(height: 900, hash: _tipHashA));
       state.applyLifecycle(const FrigateEventDto.confirmed(
-          blkheight: 450, blkhash: 'ab', foundOutputs: []));
+          blkheight: 450, blkhash: _tipHashA, foundOutputs: []));
 
       state.applyLifecycle(
           const FrigateEventDto.unconfirmed(txid: 'ff', outputs: []));
@@ -175,21 +189,24 @@ void main() {
 
     test('a new history replay (re-subscribe) starts a fresh indeterminate bar',
         () {
-      state.applyLifecycle(const FrigateEventDto.tip(height: 900, hash: 'ab'));
+      state.applyLifecycle(
+          const FrigateEventDto.tip(height: 900, hash: _tipHashA));
       state.applyLifecycle(const FrigateEventDto.confirmed(
-          blkheight: 450, blkhash: 'ab', foundOutputs: []));
+          blkheight: 450, blkhash: _tipHashA, foundOutputs: []));
       state.applyLifecycle(const FrigateEventDto.caughtUp());
       // supervisor re-subscribes from the checkpoint (B2.4)
-      state.applyLifecycle(const FrigateEventDto.tip(height: 900, hash: 'ab'));
+      state.applyLifecycle(
+          const FrigateEventDto.tip(height: 900, hash: _tipHashA));
       expect(state.catchUpBarVisible, isTrue);
       expect(state.catchUpProgress, isNull,
           reason: 'never interpolated across replays');
     });
 
     test('snapshot round-trips the bar state across the isolate boundary', () {
-      state.applyLifecycle(const FrigateEventDto.tip(height: 900, hash: 'ab'));
+      state.applyLifecycle(
+          const FrigateEventDto.tip(height: 900, hash: _tipHashA));
       state.applyLifecycle(const FrigateEventDto.confirmed(
-          blkheight: 450, blkhash: 'ab', foundOutputs: []));
+          blkheight: 450, blkhash: _tipHashA, foundOutputs: []));
 
       final restored = FrigateState()..applySnapshot(state.snapshot());
       expect(restored.catchUpBarVisible, state.catchUpBarVisible);
@@ -220,7 +237,8 @@ void main() {
           const FrigateEventDto.disconnected(reason: 'connection reset'));
       expect(state.backendUnreachable, isTrue);
 
-      state.applyLifecycle(const FrigateEventDto.tip(height: 901, hash: 'ab'));
+      state.applyLifecycle(
+          const FrigateEventDto.tip(height: 901, hash: _tipHashA));
       expect(state.backendUnreachable, isFalse,
           reason: 'the subscription re-delivered a live event (B4.4)');
     });

@@ -372,7 +372,7 @@ existence by the audit pass.
 | B5.2 | `test/services/frigate_warning_gate_test.dart::private declaration (B5.2 default): proceed` + `test/repositories/frigate_disclosure_test.dart::default is PRIVATE — public is always opt-in` + `test/widgets/frigate_backend_screen_test.dart::B5.2 (R11): a successful Frigate save starts the subscription in-session — the post-ack trigger needs no restart` |
 | B5.3 | `test/widgets/frigate_backend_screen_test.dart::B5.3 (R12): public save fires the warning AT SAVE; "No" aborts with the old settings fully intact` + `test/services/frigate_warning_gate_test.dart::public, unacked (pre-ruling state): warning fires once, held` |
 | B5.4 | `test/widgets/frigate_backend_screen_test.dart::B5.4/B8.4 (R12): "Yes" at save persists ack + URL + declaration and writes the disclosure record AT SAVE TIME` + `test/widgets/frigate_backend_screen_test.dart::B5.4/J1 (R12): an already-acked wallet saves another public URL without ever re-firing the warning` + `test/services/frigate_warning_gate_test.dart::public, already acked: proceed, no warning (B5.4 never again)` + `test/repositories/frigate_disclosure_test.dart::ack persists` |
-| B5.5 | UNCOVERED — "no silent fallback / foreign tips rejected" has no test |
+| B5.5 | `test/states/frigate_tip_source_test.dart::positive control: a well-formed session tip is adopted` + `test/states/frigate_tip_source_test.dart::B5.5 (a): malformed tip payload (non-hex block hash) is rejected — never adopted as the tip` + `test/states/frigate_tip_source_test.dart::B5.5 (a): non-positive tip height is rejected` + `test/states/frigate_tip_source_test.dart::B5.5 (b): rejection never silently falls back — bar, progress and reachability banner stay exactly as they were` + `test/states/frigate_tip_source_test.dart::B5.5 (c): the rejection is surfaced on the caller/UI path, not swallowed` + `test/states/frigate_tip_source_test.dart::B5.5 (c): the rejection flag never goes stale — the next accepted tip clears it` (guard: `lib/states/frigate_state.dart::validateTip`; a tip from a foreign ORIGIN cannot reach the adopter structurally — the Rust side holds a single subscription sink, B1.3 — so the guard pins the payload surface, the no-fallback state legs and the observable rejection) |
 | B6.1 | UNCOVERED — send-availability from confirmed balance only is untested |
 | B6.2 | UNCOVERED — carried contract, not covered by this suite |
 | B6.3 | UNCOVERED — carried contract, not covered by this suite |
@@ -385,6 +385,6 @@ existence by the audit pass.
 | B8.5 | `rust/tests/rig_b81_acceptance.rs::rig_b81_three_phase_acceptance` executes steps 1-6; step 7 (the B8.3 force-stop leg) UNCOVERED |
 
 Uncovered/PARTIAL rows at the time of writing: B1.4 (shared-layer
-leg), B2.1, B2.5, B2.6 (stays-subscribed leg), B2.7, B4.2 (send-availability leg), B5.5,
+leg), B2.1, B2.5, B2.6 (stays-subscribed leg), B2.7, B4.2 (send-availability leg),
 B6.1, B6.2, B6.3, B7.1 (service-death leg), B7.2 (device leg), B8.2, B8.3, B8.5 (step 7).
 These are follow-up card candidates, not gaps to fill in this change.

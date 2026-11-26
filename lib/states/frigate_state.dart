@@ -1,6 +1,7 @@
 import 'package:danawallet/generated/rust/api/structs/frigate_event.dart';
 import 'package:danawallet/repositories/frigate_candidates_repository.dart';
 import 'package:flutter/foundation.dart';
+import 'package:logger/logger.dart';
 
 /// UI state for the frigate unconfirmed balance line (B4.1/B4.2), the
 /// subscription catch-up progress bar (B4.3) and the unreachable-backend
@@ -21,6 +22,13 @@ import 'package:flutter/foundation.dart';
 /// clears on the next successful interaction (the first live event of the
 /// re-established subscription). No crash, no data loss, no silent
 /// fallback; errors stay human-readable.
+///
+/// B5.5 tip-source guard: the chain tip comes ONLY from the selected
+/// backend's session. A `Tip` event is adopted only when its payload is
+/// well-formed ([validateTip]); a foreign/malformed tip is rejected — the
+/// tip height, the bar and the banner stay exactly as they were (no
+/// fallback to defaults or stale state) — and the rejection is surfaced
+/// through [lastTipRejection] instead of being swallowed.
 class FrigateState extends ChangeNotifier {
   final FrigateCandidatesRepository _candidatesRepository;
 
@@ -44,9 +52,34 @@ class FrigateState extends ChangeNotifier {
   /// while true, the first public sync is BLOCKED.
   bool publicWarningPending = false;
 
+  /// B5.5: human-readable reason the most recent `Tip` was rejected as a
+  /// foreign/malformed tip, or null when the last tip attempt was accepted
+  /// (the flag never goes stale: the next accepted tip clears it). This is
+  /// the observable rejection surface for the caller/UI path — a rejection
+  /// is never swallowed silently.
+  String? lastTipRejection;
+
+  /// B5.5: a well-formed block-hash digest is exactly 64 hex digits.
+  static final RegExp _blockHashDigest = RegExp(r'^[0-9a-f]{64}$');
+
   FrigateState({FrigateCandidatesRepository? candidatesRepository})
       : _candidatesRepository =
             candidatesRepository ?? FrigateCandidatesRepository.instance;
+
+  /// B5.5 tip-source validation: returns null when the scanner-reported tip
+  /// is well-formed and may be adopted, or a human-readable rejection reason
+  /// when it is foreign/malformed (non-positive height, or a block hash that
+  /// is not a 32-byte hex digest).
+  static String? validateTip(int height, String hash) {
+    if (height <= 0) {
+      return 'foreign tip rejected: height $height is not a block height';
+    }
+    if (!_blockHashDigest.hasMatch(hash.trim().toLowerCase())) {
+      return 'foreign tip rejected: block hash "$hash" is not a 32-byte '
+          'hex digest';
+    }
+    return null;
+  }
 
   /// B5.3: set/clear the blocking public-warning pending flag.
   void setPublicWarningPending(bool pending) {
@@ -75,7 +108,25 @@ class FrigateState extends ChangeNotifier {
   /// touch it).
   void applyLifecycle(FrigateEventDto event) {
     switch (event) {
-      case FrigateEventDto_Tip(:final height):
+      case FrigateEventDto_Tip(:final height, :final hash):
+        // B5.5: the chain tip comes ONLY from the selected backend's
+        // session, and only a well-formed payload is a chain tip. A
+        // foreign/malformed tip is rejected: NO silent fallback — the tip
+        // height, the bar and the reachability banner stay exactly as they
+        // were — and the rejection is surfaced, not swallowed.
+        final rejection = validateTip(height, hash);
+        if (rejection != null) {
+          Logger().w('frigate tip source: $rejection (B5.5)');
+          lastTipRejection = rejection;
+          notifyListeners();
+          return;
+        }
+        if (lastTipRejection != null) {
+          // The rejection flag never goes stale: the next accepted tip
+          // clears it.
+          lastTipRejection = null;
+          notifyListeners();
+        }
         // A live event from the backend — the unreachable banner clears on
         // this successful interaction (B4.4).
         _tipHeight = height;
