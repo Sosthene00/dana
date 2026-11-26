@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:danawallet/services/sync_service.dart';
 import 'package:danawallet/states/chain_state.dart';
+import 'package:danawallet/states/frigate_state.dart';
 import 'package:danawallet/states/permission_state.dart';
 import 'package:danawallet/states/sync_progress_state.dart';
 import 'package:danawallet/states/wallet_state.dart';
@@ -26,11 +27,13 @@ class SyncOrchestrator {
 
   SyncOrchestrator({
     required ChainState chainState,
+    required FrigateState frigateState,
     required PermissionState permissionState,
     required SyncProgressState syncProgress,
     required WalletState walletState,
   })  : _service = SyncService(
           chainState: chainState,
+          frigateState: frigateState,
           syncProgress: syncProgress,
           walletState: walletState,
         ),
@@ -52,15 +55,19 @@ class SyncOrchestrator {
         Logger().i("Successfully started foreground sync service");
       } else {
         Logger().w("Starting in-process service as a fallback");
-        _service.startInProcess();
+        await _service.startInProcess();
       }
     } else {
       // for non-android platforms, we always start the sync service in-process
-      _service.startInProcess();
+      await _service.startInProcess();
       Logger().i("Successfully started in-process sync service");
     }
     _running = true;
   }
+
+  /// Settings saved a backend. The host that holds the writer lease swaps
+  /// scanners; this isolate does not start a second one.
+  Future<void> applyBackend() => _service.applyBackend();
 
   Future<void> stop() async {
     if (!_running) return;

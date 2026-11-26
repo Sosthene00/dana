@@ -43,7 +43,13 @@ class FrigateState extends ChangeNotifier {
   double? catchUpProgress;
 
   /// Latest scanner-reported tip height (the determinate denominator).
+  /// Cleared when catch-up finishes so the next replay starts fresh.
   int? _tipHeight;
+
+  /// Last accepted tip, kept after [CaughtUp] so confirmation counts and
+  /// "blocks to scan" can use it. Not cleared with the catch-up bar, and
+  /// never filled from another backend (B5.5).
+  int? tipHeight;
 
   /// B4.4: whether the frigate backend is currently unreachable.
   bool backendUnreachable = false;
@@ -130,6 +136,10 @@ class FrigateState extends ChangeNotifier {
         // A live event from the backend — the unreachable banner clears on
         // this successful interaction (B4.4).
         _tipHeight = height;
+        if (tipHeight != height) {
+          tipHeight = height;
+          notifyListeners();
+        }
         _setBar(visible: true, progress: catchUpProgress);
         if (backendUnreachable) {
           backendUnreachable = false;
@@ -173,6 +183,7 @@ class FrigateState extends ChangeNotifier {
         'frigateBarProgress': catchUpProgress,
         'frigateUnreachable': backendUnreachable,
         'frigateWarningPending': publicWarningPending,
+        'frigateTipHeight': tipHeight,
       };
 
   /// Apply a snapshot produced by [snapshot] in another isolate.
@@ -181,6 +192,7 @@ class FrigateState extends ChangeNotifier {
     final progress = data['frigateBarProgress'];
     final unreachable = data['frigateUnreachable'];
     final warningPending = data['frigateWarningPending'];
+    final tip = data['frigateTipHeight'];
     var changed = false;
     if (visible is bool && visible != catchUpBarVisible) {
       catchUpBarVisible = visible;
@@ -196,6 +208,10 @@ class FrigateState extends ChangeNotifier {
     }
     if (warningPending is bool && warningPending != publicWarningPending) {
       publicWarningPending = warningPending;
+      changed = true;
+    }
+    if (tip is int && tip != tipHeight) {
+      tipHeight = tip;
       changed = true;
     }
     if (changed) notifyListeners();

@@ -1,11 +1,11 @@
-// B1.2 regression test (f49c0b7): the frigate backend gates the blindbit
-// scan engine.
+// B1.2 regression test (f49c0b7): the sync host gates the blindbit scanner.
 //
-// SyncEngine.trySync() is the periodic sync heartbeat. When the chain backend
-// is committed to frigate, the frigate path is subscription-driven end to end
-// (B1.2): Dana performs NO blindbit work per heartbeat — no blindbit HTTP
-// request, no Rust batch scan invocation, no sync-state DB write. The blindbit
-// engine resumes untouched when the backend is switched back (B1.5).
+// The host's wake is the periodic sync heartbeat. When the chain backend
+// is committed to frigate, the host starts the frigate scanner only (B1.2):
+// Dana performs NO blindbit work per heartbeat — no blindbit HTTP request,
+// no Rust batch scan invocation, no sync-state DB write. The blindbit
+// scanner is started again, untouched, when the backend is switched back
+// (B1.5).
 //
 // The positive control keeps the backend on blindbit and asserts the same
 // heartbeat DOES walk the chain api and invoke the batch scan, so this suite
@@ -36,8 +36,11 @@ import 'package:danawallet/repositories/settings_repository.dart';
 import 'package:danawallet/repositories/transactions_repository.dart';
 import 'package:danawallet/repositories/wallet_repository.dart';
 import 'package:danawallet/services/frigate_confirmation_monitor.dart';
+import 'package:danawallet/repositories/writer_lease_repository.dart';
 import 'package:danawallet/services/frigate_subscription_controller.dart';
 import 'package:danawallet/services/sync_engine.dart';
+import 'package:danawallet/services/sync_host.dart';
+import 'package:danawallet/services/writer_lease.dart';
 import 'package:danawallet/states/frigate_state.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -231,18 +234,54 @@ void main() {
   var syncStarted = 0;
   var syncComplete = 0;
 
-  SyncEngine buildEngine() {
+  SyncEngine buildEngine(WriterLease lease) {
     syncStarted = 0;
     syncComplete = 0;
     return SyncEngine(
+      writerLease: lease,
       onSyncStarted: (start, end) => syncStarted++,
       onSyncComplete: (success) => syncComplete++,
       onStateUpdated: (_) async {},
     );
   }
 
+  final hosts = <SyncHost>[];
+
+  SyncHost buildHost() {
+    final lease = WriterLease(writerId: WriterLease.appWriterId);
+    final host = SyncHost(
+      lease: lease,
+      buildScanner: (kind, hostLease) {
+        switch (kind) {
+          case ChainBackendKind.blindbit:
+            return BlindbitScanner(buildEngine(hostLease));
+          case ChainBackendKind.frigate:
+            return FrigateScanner(FrigateSubscriptionController(
+              frigateState: FrigateState(),
+              writerLease: hostLease,
+              confirmationMonitor: _NoopConfirmationMonitor(),
+            ));
+        }
+      },
+    );
+    hosts.add(host);
+    return host;
+  }
+
+  Future<void> settleScan() async {
+    final end = DateTime.now().add(const Duration(seconds: 5));
+    while (syncComplete == 0) {
+      if (DateTime.now().isAfter(end)) {
+        fail('blindbit scan did not complete');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+  }
+
   setUp(() async {
     api.reset();
+    syncStarted = 0;
+    syncComplete = 0;
 
     // in-memory prefs for the Settings/Wallet repository singletons: a wallet
     // exists (keys in secure storage), lastSync = 100, network = regtest.
@@ -264,9 +303,15 @@ void main() {
     OwnedOutputsRepository.testDatabaseOverride = () async => db;
     TransactionsRepository.testDatabaseOverride = () async => db;
     FrigateCandidatesRepository.testDatabaseOverride = () async => db;
+    WriterLeaseRepository.testDatabaseOverride = () async => db;
   });
 
   tearDown(() async {
+    for (final host in hosts) {
+      await host.stop();
+    }
+    hosts.clear();
+    WriterLeaseRepository.testDatabaseOverride = null;
     FrigateCandidatesRepository.testDatabaseOverride = null;
     OwnedOutputsRepository.testDatabaseOverride = null;
     TransactionsRepository.testDatabaseOverride = null;
@@ -279,9 +324,9 @@ void main() {
       await SettingsRepository.instance
           .setChainBackend(ChainBackendKind.frigate);
 
-      final engine = buildEngine();
-      await engine.trySync();
-      await engine.waitForIdle();
+      final host = buildHost();
+      await host.start();
+      await host.wake();
 
       // no blindbit HTTP request: the chain api is the only network surface
       expect(api.checkNetworkCalls, 0,
@@ -307,9 +352,9 @@ void main() {
       await SettingsRepository.instance
           .setChainBackend(ChainBackendKind.blindbit);
 
-      final engine = buildEngine();
-      await engine.trySync();
-      await engine.waitForIdle();
+      final host = buildHost();
+      await host.start();
+      await settleScan();
 
       expect(api.checkNetworkCalls, 1,
           reason: 'the blindbit engine probes the server network');
@@ -334,9 +379,9 @@ void main() {
       // fresh selection state: no committed backend, no frigate URL
       await seedPrefs({_keyNetwork: 'regtest', _keyLastSync: 100});
 
-      final engine = buildEngine();
-      await engine.trySync();
-      await engine.waitForIdle();
+      final host = buildHost();
+      await host.start();
+      await settleScan();
 
       // B1.1: Blindbit remains the default backend — with nothing committed
       // and nothing configured the selection resolves to (and stays)
@@ -372,9 +417,9 @@ void main() {
         'frigateurl': '127.0.0.1:50002',
       });
 
-      final engine = buildEngine();
-      await engine.trySync();
-      await engine.waitForIdle();
+      final host = buildHost();
+      await host.start();
+      await host.wake();
 
       expect(await SettingsRepository.instance.getChainBackend(),
           ChainBackendKind.frigate);
@@ -400,9 +445,9 @@ void main() {
       await seedPrefs({_keyNetwork: 'regtest', _keyLastSync: 100});
       await SettingsRepository.instance
           .setChainBackend(ChainBackendKind.blindbit);
-      final engine = buildEngine();
-      await engine.trySync();
-      await engine.waitForIdle();
+      final host = buildHost();
+      await host.start();
+      await settleScan();
       expect(api.wallet.syncCalls, 1,
           reason: 'pre-switch positive control: the blindbit engine scanned');
       expect(await WalletRepository.instance.readLastSync(), 100);
@@ -413,9 +458,8 @@ void main() {
       await SettingsRepository.instance.setFrigateUrl('127.0.0.1:50002');
       api.reset();
 
-      // post-switch heartbeat: the blindbit engine stays off after the flip
-      await engine.trySync();
-      await engine.waitForIdle();
+      await host.applyBackend();
+      await host.wake();
       expect(api.checkNetworkCalls, 0,
           reason: 'no blindbit reachability probe after the flip');
       expect(api.getChainHeightCalls, 0,
@@ -427,14 +471,6 @@ void main() {
       // the frigate path resumes from the SAME committed height: the fresh
       // subscription's start_height is the wallet's committed checkpoint
       // (B1.5) — not a rebuild from 0 and not a blindbit lastscan reset.
-      final controller = FrigateSubscriptionController(
-        frigateState: FrigateState(),
-        // phase 3 (the electrum leg) is separately covered by
-        // frigate_confirmation_monitor_test.dart; no-op it here so this
-        // test stays focused on the switch/start_height semantics.
-        confirmationMonitor: _NoopConfirmationMonitor(),
-      );
-      expect(await controller.start(), isTrue);
       expect(api.wallet.frigateStartCalls, 1);
       expect(api.wallet.frigateStartHeight, 100,
           reason: 'B1.5: start_height on the blindbit->frigate switch is '
@@ -442,7 +478,6 @@ void main() {
       expect(api.wallet.frigateHostUrl, '127.0.0.1:50002');
       // no wallet state rebuilt or lost across the switch
       expect(await WalletRepository.instance.readLastSync(), 100);
-      await controller.stop();
     });
   });
 }

@@ -119,19 +119,14 @@ class ForegroundSyncService {
     Logger().i('Android foreground service stopped');
   }
 
-  /// R11: ask the live foreground service to re-evaluate the frigate
-  /// settings in-session and restart the subscription from the freshly
-  /// committed settings. The subscription lives in the service isolate
-  /// (B2.1) and the app isolate stays read-only while the service holds the
-  /// writer lease (B2.3) — an app-isolate start() would be refused and the
-  /// saved URL would not apply until the next service start. Returns true
-  /// when the request was delivered to a running service — the caller must
-  /// then NOT also stop()/start() in-process (two writers is a spec
-  /// violation, B2.3).
-  static Future<bool> requestFrigateRestart() async {
+  /// Ask the live foreground service to apply the committed backend.
+  /// The service host stops its current scanner and starts the one the
+  /// settings now name. Returns true when the request was delivered — the
+  /// caller must not also start a scanner in this isolate.
+  static Future<bool> requestApplyBackend() async {
     if (!Platform.isAndroid) return false;
     if (!await FlutterForegroundTask.isRunningService) return false;
-    FlutterForegroundTask.sendDataToTask({bgKeyRestartFrigate: true});
+    FlutterForegroundTask.sendDataToTask({bgKeyApplyBackend: true});
     return true;
   }
 }

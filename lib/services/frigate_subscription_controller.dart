@@ -34,14 +34,12 @@ import 'package:logger/logger.dart';
 /// Idempotent: a second start while the stream is already owned is a no-op
 /// (mirrors B1.3 on the Rust side, which holds a single subscription).
 ///
-/// Single-writer placement (R6, B2.1/B2.3/B2.8): with a [writerLease] set,
-/// [start] takes over writing only when the lease is free or stale — the
-/// staleness observation IS the confirmation that the previous writer (the
-/// foreground service) is down. While a live writer holds the lease, start()
-/// refuses and the caller stays read-only (the app READS existing state, it
-/// does not rescan, B2.2). The foreground service passes the
-/// [WriterLease.serviceWriterId] lease; the app isolate passes
-/// [WriterLease.appWriterId] as the in-process fallback/takeover writer.
+/// The sync host acquires [writerLease] before it chooses this scanner
+/// (B2.3 / B2.8). [start] re-checks that same lease and refuses when a
+/// different writer holds it. [stopSubscription] ends the subscription and
+/// the confirmation monitor and does not release the lease — the host
+/// releases it only when the host itself stops, so a backend swap cannot
+/// invite the other isolate in mid-switch.
 class FrigateSubscriptionController {
   late final FrigateEventHandler _handler;
   final FrigateState _frigateState;
@@ -116,12 +114,6 @@ class FrigateSubscriptionController {
       }
 
       final settings = SettingsRepository.instance;
-      if (await settings.getChainBackend() != ChainBackendKind.frigate) {
-        Logger()
-            .i('frigate: chain backend is Blindbit, subscription not started');
-        return false;
-      }
-
       final hostUrl = await settings.getFrigateUrl();
       if (hostUrl == null || hostUrl.isEmpty) {
         Logger()
@@ -196,21 +188,28 @@ class FrigateSubscriptionController {
       _frigateState.markUnreachable();
       await _events?.cancel();
       _events = null;
-      // never wedge the lease on a failed start (B2.8)
-      await writerLease?.release();
+      // The host owns the lease. Releasing it here would let the other
+      // isolate start a second writer while this host is still up.
       rethrow;
     } finally {
       _starting = false;
     }
   }
 
-  Future<void> stop() async {
+  /// End the subscription and the confirmation monitor. Does not release
+  /// the writer lease.
+  Future<void> stopSubscription() async {
     await _events?.cancel();
     _events = null;
     await _monitor.stop();
-    // graceful release: the next writer takes over without waiting for
-    // staleness (B2.8)
-    await writerLease?.release();
     await frigate_api.stopFrigateSubscription();
+  }
+
+  /// [stopSubscription], then release the writer lease. Callers that are
+  /// not the sync host (tests, a direct teardown) use this. The host calls
+  /// [stopSubscription] and releases the lease itself when it stops.
+  Future<void> stop() async {
+    await stopSubscription();
+    await writerLease?.release();
   }
 }

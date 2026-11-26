@@ -1,4 +1,5 @@
 import 'package:danawallet/data/models/recommended_fee_model.dart';
+import 'package:danawallet/repositories/settings_repository.dart';
 import 'package:danawallet/extensions/date_time.dart';
 import 'package:danawallet/extensions/network.dart';
 import 'package:danawallet/generated/rust/api/chain.dart';
@@ -20,6 +21,18 @@ class ChainState extends ChangeNotifier {
   // indicates whether the chain is 'available'
   String? _blindbitUrl;
   int? _tip;
+
+  /// Which scanner the UI should treat as the chain-tip source (B5.5).
+  /// The sync host updates this when the committed backend changes.
+  ChainBackendKind _scanBackend = ChainBackendKind.blindbit;
+
+  ChainBackendKind get scanBackend => _scanBackend;
+
+  void setScanBackend(ChainBackendKind kind) {
+    if (_scanBackend == kind) return;
+    _scanBackend = kind;
+    notifyListeners();
+  }
 
   bool get initiated =>
       _network != null &&
@@ -115,6 +128,7 @@ class ChainState extends ChangeNotifier {
     _tip = null;
     _blindbitUrl = null;
     _network = null;
+    _scanBackend = ChainBackendKind.blindbit;
   }
 
   int get tip {

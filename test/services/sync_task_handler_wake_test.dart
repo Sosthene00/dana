@@ -35,6 +35,7 @@ import 'dart:isolate';
 import 'dart:ui' show IsolateNameServer;
 
 import 'package:danawallet/constants.dart';
+import 'package:danawallet/generated/rust/api/structs/frigate_event.dart';
 import 'package:danawallet/generated/rust/api/structs/network.dart';
 import 'package:danawallet/generated/rust/api/structs/outpoint.dart';
 import 'package:danawallet/generated/rust/api/structs/state_update.dart';
@@ -44,6 +45,7 @@ import 'package:danawallet/repositories/owned_outputs_repository.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
 import 'package:danawallet/repositories/transactions_repository.dart';
 import 'package:danawallet/repositories/wallet_repository.dart';
+import 'package:danawallet/repositories/writer_lease_repository.dart';
 import 'package:danawallet/services/sync_task_handler.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -185,6 +187,13 @@ class _RecordingRustApi implements RustLibApi {
   }
 
   @override
+  Stream<FrigateEventDto> crateApiStreamCreateFrigateEventStream() =>
+      const Stream<FrigateEventDto>.empty();
+
+  @override
+  Future<void> crateApiWalletFrigateStopFrigateSubscription() async {}
+
+  @override
   dynamic noSuchMethod(Invocation invocation) {
     unexpectedApiCalls.add(invocation.memberName.toString());
     return null;
@@ -213,6 +222,7 @@ void main() {
 
   late Database db;
   late Directory tmpDir;
+  SynchronizationTaskHandler? handler;
 
   // bridge messages the handler sent to the "main isolate"; the port is
   // created fresh per test (single-subscription stream)
@@ -239,9 +249,10 @@ void main() {
 
   /// Lets the initial (service-start) cycle finish and returns the number of
   /// completed scans so far.
-  Future<int> startServiceAndSettle(SynchronizationTaskHandler handler,
+  Future<int> startServiceAndSettle(SynchronizationTaskHandler started,
       {bool scanCompletes = true}) async {
-    await handler.onStart(DateTime.now(), TaskStarter.developer);
+    handler = started;
+    await started.onStart(DateTime.now(), TaskStarter.developer);
     if (scanCompletes) {
       await waitFor(() => messageCount((m) => m[bgKeyComplete] == true) >= 1,
           reason: 'service-start cycle did not complete');
@@ -267,6 +278,9 @@ void main() {
     await applyMigrations(db);
     OwnedOutputsRepository.testDatabaseOverride = () async => db;
     TransactionsRepository.testDatabaseOverride = () async => db;
+    WriterLeaseRepository.testDatabaseOverride = () async => db;
+    await SettingsRepository.instance
+        .setChainBackend(ChainBackendKind.blindbit);
 
     // capture what the handler sends to the main isolate
     bridgeMessages.clear();
@@ -282,9 +296,12 @@ void main() {
   });
 
   tearDown(() async {
+    await handler?.onDestroy(DateTime.now(), false);
+    handler = null;
     IsolateNameServer.removePortNameMapping(_bridgePortName);
     bridgePort?.close();
     bridgePort = null;
+    WriterLeaseRepository.testDatabaseOverride = null;
     OwnedOutputsRepository.testDatabaseOverride = null;
     TransactionsRepository.testDatabaseOverride = null;
     await db.close();
@@ -355,8 +372,8 @@ void main() {
       // park the service-start scan in flight
       final inFlight = Completer<void>();
       api.wallet.pendingScan = inFlight;
-      final handler = SynchronizationTaskHandler();
-      await handler.onStart(DateTime.now(), TaskStarter.developer);
+      handler = SynchronizationTaskHandler();
+      await handler!.onStart(DateTime.now(), TaskStarter.developer);
       await waitFor(() => api.wallet.syncCalls == 1,
           reason: 'the service-start cycle did not reach the scan');
       await waitFor(() => messageCount((m) => m[bgKeyStartHeight] == 101) >= 1,
@@ -364,7 +381,7 @@ void main() {
       final messagesAtWake = bridgeMessages.length;
 
       // THE wake trigger arrives while the sync is running
-      handler.onReceiveData({bgKeySync: true});
+      handler!.onReceiveData({bgKeySync: true});
 
       await waitFor(() => bridgeMessages.length > messagesAtWake,
           reason: 'the wake did not re-send the in-flight progress state');
@@ -388,15 +405,15 @@ void main() {
         '(B1.2/B1.3)', () async {
       await SettingsRepository.instance
           .setChainBackend(ChainBackendKind.frigate);
-      final handler = SynchronizationTaskHandler();
-      await handler.onStart(DateTime.now(), TaskStarter.developer);
+      handler = SynchronizationTaskHandler();
+      await handler!.onStart(DateTime.now(), TaskStarter.developer);
       // the frigate-gated cycle still enters (reads the wallet) before the
       // gate returns — wait for that, then wake.
       await waitFor(() => api.scanKeyDecodes >= 1,
           reason: 'the service-start cycle did not run');
       final messagesAtWake = List<Object>.of(bridgeMessages);
 
-      handler.onReceiveData({bgKeySync: true});
+      handler!.onReceiveData({bgKeySync: true});
       await Future<void>.delayed(const Duration(milliseconds: 300));
 
       expect(api.checkNetworkCalls, 0,

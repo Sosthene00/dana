@@ -3,12 +3,9 @@ import 'dart:async';
 import 'package:danawallet/repositories/frigate_disclosure_repository.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
 import 'package:danawallet/screens/settings/chainbackend/chain_backend_screen.dart';
-import 'package:danawallet/services/frigate_subscription_controller.dart';
 import 'package:danawallet/services/frigate_url_probe.dart';
-import 'package:danawallet/states/frigate_state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
@@ -27,45 +24,20 @@ import 'package:shared_preferences_platform_interface/shared_preferences_async_p
 // in-session. There is no public/private toggle: saving a Frigate URL is
 // the public path.
 
-/// Controller stub overriding only the lifecycle seams the screen touches
-/// (the R11 seam): start()/stop() are recorded, never run; urlAtStart/
-/// publicAtStart capture what the settings held when start() was invoked.
-class _RecordingController extends FrigateSubscriptionController {
-  /// F-R12b seams: [stopFuture] makes stop() hang (the exact on-device
-  /// deadlock) or return late; [stopError] makes it throw; [startCalled]
-  /// records whether a fresh start() ever ran.
-  _RecordingController({this.stopFuture, this.stopError})
-      : super(frigateState: FrigateState());
+/// Records the single applyBackend command the screen sends after a
+/// committed save. [future] can hang or throw so the screen's timeout and
+/// error path stay covered.
+class _ApplyProbe {
+  _ApplyProbe({this.future, this.error});
 
-  final Future<void>? stopFuture;
-  final Object? stopError;
-  bool startCalled = false;
-  int startCalls = 0;
-  int stopCalls = 0;
-  String? urlAtStart;
-  bool? publicAtStart;
+  final Future<void>? future;
+  final Object? error;
+  int calls = 0;
 
-  /// R11 seam: whether this isolate's controller OWNS the subscription leg.
-  /// False = a foreground service (or nobody) holds the writer.
-  bool running = false;
-
-  @override
-  bool get isRunning => running;
-
-  @override
-  Future<void> stop() async {
-    stopCalls++;
-    if (stopError != null) throw stopError!;
-    if (stopFuture != null) await stopFuture;
-  }
-
-  @override
-  Future<bool> start() async {
-    startCalls++;
-    startCalled = true;
-    urlAtStart = await SettingsRepository.instance.getFrigateUrl();
-    publicAtStart = await SettingsRepository.instance.isFrigatePublic();
-    return true;
+  Future<void> call() async {
+    calls++;
+    if (error != null) throw error!;
+    if (future != null) await future;
   }
 }
 
@@ -83,47 +55,28 @@ void main() {
 
   Widget wrap(Widget child) => MaterialApp(home: Scaffold(body: child));
 
-  /// A save with an injected controller (the R11 seam): start()/stop() are
-  /// recorded, never run; [urlAtStart] captures what the settings held at
-  /// the moment start() was invoked.
-  Widget wrapWithController(Widget child,
-          {required FrigateSubscriptionController controller}) =>
-      MaterialApp(
-          home: Scaffold(
-              body: Provider<FrigateSubscriptionController>.value(
-                  value: controller, child: child)));
-
-  /// A save with an injected controller and a short [restartStopTimeout]
-  /// (the F-R12b seam): the post-save restart must never wedge the flow.
-  Future<_RecordingController> saveWithController(WidgetTester tester,
-      {required _RecordingController controller,
-      Duration restartStopTimeout = const Duration(seconds: 1),
-      Future<bool> Function()? requestServiceRestart}) async {
-    await tester.pumpWidget(wrapWithController(
-      ChainBackendScreen(
-        probe: (url) async {},
-        restartStopTimeout: restartStopTimeout,
-        requestServiceRestart: requestServiceRestart,
-      ),
-      controller: controller,
-    ));
+  Future<_ApplyProbe> saveFrigate(WidgetTester tester,
+      {required _ApplyProbe apply,
+      Duration applyTimeout = const Duration(seconds: 1),
+      String url = 'f-r12b.lan:50002'}) async {
+    await tester.pumpWidget(wrap(ChainBackendScreen(
+      probe: (url) async {},
+      applyTimeout: applyTimeout,
+      applyBackend: apply.call,
+    )));
     await tester.pumpAndSettle();
 
     await tester.tap(find.text('Frigate'));
     await tester.pump();
-    await tester.enterText(find.byType(TextField), 'f-r12b.lan:50002');
+    await tester.enterText(find.byType(TextField), url);
     await tester.tap(find.text('Save backend'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Yes — I understand, sync publicly'));
-    // Flush the probe + persist, then advance fake time past the restart's
-    // stop() bound so a timed-out teardown resolves before the assertions.
     await tester.pump();
     await tester.pump(const Duration(seconds: 2));
-    // Bounded: in the F-R12b red state the screen never pops — fail fast
-    // instead of the framework's 10-minute default timeout.
     await tester.pumpAndSettle(const Duration(milliseconds: 50),
         EnginePhase.sendSemanticsUpdate, const Duration(seconds: 5));
-    return controller;
+    return apply;
   }
 
   Future<void> declarePublicAndSave(WidgetTester tester,
@@ -251,151 +204,54 @@ void main() {
     expect(find.byType(ChainBackendScreen), findsOneWidget);
   });
 
-  // --- R11: a successful save starts the subscription immediately ---
+  // A committed save of either backend is one applyBackend command. The
+  // host, not this screen, decides which isolate swaps the scanner.
+
   testWidgets(
-      'B5.2 (R11): a successful Frigate save starts the subscription '
+      'B5.2 (R11): a successful Frigate save applies the backend '
       'in-session — the post-ack trigger needs no restart', (tester) async {
-    final controller = _RecordingController();
+    final apply = _ApplyProbe();
+    await saveFrigate(tester,
+        apply: apply, url: 'public.lan:50002', applyTimeout: const Duration(seconds: 5));
 
-    await tester.pumpWidget(wrapWithController(
-      ChainBackendScreen(probe: (url) async {}),
-      controller: controller,
-    ));
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.text('Frigate'));
-    await tester.pump();
-    await tester.enterText(find.byType(TextField), 'public.lan:50002');
-    await tester.tap(find.text('Save backend'));
-    await tester.pumpAndSettle();
-
-    // R12's save-time warning composes with R11: the ack lands BEFORE the
-    // subscription start, so the start proceeds without a warning hold.
-    expect(find.text('Sync through a public backend?'), findsOneWidget);
-    await tester.tap(find.text('Yes — I understand, sync publicly'));
-    await tester.pumpAndSettle();
-
-    expect(controller.startCalls, 1,
-        reason: 'R11: the acked public save also starts the subscription '
-            'in-session');
-    expect(controller.urlAtStart, 'public.lan:50002');
-    expect(controller.publicAtStart, isTrue);
+    expect(apply.calls, 1,
+        reason: 'R11: the acked public save asks the host to apply the '
+            'committed backend in-session');
+    expect(await SettingsRepository.instance.getFrigateUrl(), 'public.lan:50002');
+    expect(await SettingsRepository.instance.isFrigatePublic(), isTrue);
+    expect(await SettingsRepository.instance.getChainBackend(),
+        ChainBackendKind.frigate);
     expect(await FrigateDisclosureRepository.instance.isPublicWarningAcked(),
-        isTrue,
-        reason: 'the ack is persisted before the start, so the gate '
-            'proceeds instead of holding the subscription');
+        isTrue);
     expect(find.byType(ChainBackendScreen), findsNothing);
   });
-  // --- F-R12b: the save flow must never hang on the post-persist restart ---
-  //
-  // On-device (F-R12b, 3/3 repros): after the settings are PERSISTED the
-  // restart's `await controller.stop()` never returns, so the screen stays
-  // stuck on "Probing backend…" forever. The save is committed; the UI must
-  // pop regardless of what the restart teardown does. The restart is
-  // best-effort: bounded by a timeout, and a stop that never returned never
-  // races a fresh start() (a late-completing stop would tear the new
-  // subscription down).
 
   testWidgets(
-      'F-R12b: a hanging controller.stop() never wedges the save — the '
-      'settings are committed and the screen pops', (tester) async {
+      'F-R12b: a hanging apply never wedges the save — the settings are '
+      'committed and the screen pops', (tester) async {
     final settings = SettingsRepository.instance;
-    // The exact on-device hang: stop() never returns.
-    final controller =
-        _RecordingController(stopFuture: Completer<void>().future);
+    final apply = _ApplyProbe(future: Completer<void>().future);
 
-    await saveWithController(tester, controller: controller);
+    await saveFrigate(tester, apply: apply);
 
     expect(await settings.getFrigateUrl(), 'f-r12b.lan:50002',
-        reason: 'the save is committed before the restart');
+        reason: 'the save is committed before the host swap returns');
     expect(find.byType(ChainBackendScreen), findsNothing,
-        reason: 'the screen must not stay stuck on "Probing backend…" '
-            'when the restart teardown never returns');
-    expect(controller.startCalled, isFalse,
-        reason: 'a stop that never returned must not race a fresh start() — '
-            'a late-completing stop would tear the new subscription down');
+        reason: 'the screen must not stay stuck when the host swap does '
+            'not return');
+    expect(apply.calls, 1);
   });
 
   testWidgets(
-      'F-R12b: a slow-but-returning stop still restarts the subscription '
-      'in the background after the pop', (tester) async {
-    final controller = _RecordingController(
-        stopFuture: Future<void>.delayed(const Duration(milliseconds: 200)));
-
-    await saveWithController(tester, controller: controller);
-
-    expect(find.byType(ChainBackendScreen), findsNothing);
-    expect(controller.startCalled, isTrue,
-        reason: 'the restart still runs (unawaited) once stop() returns');
-  });
-
-  testWidgets(
-      'F-R12b: a throwing stop() still pops the screen and never starts '
-      '(the pre-existing catch path)', (tester) async {
-    final controller = _RecordingController(stopError: StateError('boom'));
-
-    await saveWithController(tester, controller: controller);
-
-    expect(find.byType(ChainBackendScreen), findsNothing);
-    expect(controller.startCalled, isFalse);
-  });
-
-  testWidgets(
-      'R11: with the foreground service owning the subscription leg, a '
-      'frigate save restarts it in the service — never a read-only app start',
+      'a throwing apply still pops the screen after the save is committed',
       (tester) async {
-    // The app-isolate controller is NOT the writer: the foreground service
-    // holds the writer lease (B2.1/B2.3) — the exact on-device state where
-    // the pre-R11-fix save stopped the subscription and nothing restarted
-    // it (app-isolate start() refused read-only, service never re-evaluated).
-    final controller = _RecordingController();
-    var restartRequests = 0;
-    await saveWithController(tester, controller: controller,
-        requestServiceRestart: () async {
-      restartRequests++;
-      return true; // the live service accepted the in-session restart
-    });
+    final apply = _ApplyProbe(error: StateError('boom'));
 
-    expect(restartRequests, 1,
-        reason: 'R11: the save must ask the live service to re-evaluate the '
-            'freshly committed settings in-session');
-    expect(controller.stopCalls, 0,
-        reason: 'the app must not tear the service-owned Rust subscription '
-            'down from another isolate');
-    expect(controller.startCalls, 0,
-        reason: 'while the service holds the writer lease the app-isolate '
-            'start() stays read-only (B2.3) — a refused start leaves the '
-            'saved URL unapplied until the next service start');
-  });
+    await saveFrigate(tester, apply: apply);
 
-  testWidgets(
-      'R11: no live service — the save still restarts the subscription '
-      'in-process (the app-isolate fallback)', (tester) async {
-    final controller = _RecordingController();
-    await saveWithController(tester, controller: controller,
-        requestServiceRestart: () async => false);
-
-    expect(controller.stopCalls, 1);
-    expect(controller.startCalls, 1,
-        reason: 'with no live service the app isolate is the writer — the '
-            'in-process restart applies the saved settings immediately');
-  });
-
-  testWidgets(
-      'R11: the app isolate already holds the writer — the save restarts '
-      'in-process and does not disturb the service', (tester) async {
-    final controller = _RecordingController()..running = true;
-    var restartRequests = 0;
-    await saveWithController(tester, controller: controller,
-        requestServiceRestart: () async {
-      restartRequests++;
-      return true;
-    });
-
-    expect(restartRequests, 0,
-        reason: 'the app isolate is the writer; the service must not be '
-            'asked to restart a leg it does not own');
-    expect(controller.stopCalls, 1);
-    expect(controller.startCalls, 1);
+    expect(find.byType(ChainBackendScreen), findsNothing);
+    expect(apply.calls, 1);
+    expect(await SettingsRepository.instance.getChainBackend(),
+        ChainBackendKind.frigate);
   });
 }

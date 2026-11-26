@@ -14,6 +14,7 @@ import 'package:danawallet/repositories/owned_outputs_repository.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
 import 'package:danawallet/repositories/transactions_repository.dart';
 import 'package:danawallet/repositories/wallet_repository.dart';
+import 'package:danawallet/services/writer_lease.dart';
 import 'package:logger/logger.dart';
 
 /// Platform-agnostic sync core.
@@ -38,8 +39,17 @@ class SyncEngine {
 
   final String _logTag;
 
+  /// Isolate handoff (B2.3 / B2.8). The host acquires it; every confirmed-state
+  /// write renews it and aborts when a foreign writer holds a fresh lease.
+  /// Null only for tests that drive the engine with no host.
+  final WriterLease? writerLease;
+
   bool _isSyncing = false;
   bool get isSyncing => _isSyncing;
+
+  /// Set by the owning scanner on stop so a scan that has not reached its
+  /// first await still exits without writing.
+  bool _accepting = true;
   Completer<void>? _idleCompleter;
 
   late final StreamSubscription _syncResultSubscription;
@@ -52,12 +62,33 @@ class SyncEngine {
     required this.onSyncStarted,
     required this.onSyncComplete,
     required this.onStateUpdated,
+    this.writerLease,
     String logTag = 'sync',
   }) : _logTag = logTag {
-    _syncResultSubscription = createSyncResultStream().listen(_onSyncResult);
+    _syncResultSubscription = createSyncResultStream().listen((event) {
+      unawaited(() async {
+        try {
+          await _onSyncResult(event);
+        } on WriterLeaseLostException catch (e) {
+          Logger().e('[$_logTag] writer lease lost during scan result: $e');
+          onSyncComplete(false);
+        }
+      }());
+    });
+  }
+
+  /// Refuse further scans. In-flight work is interrupted by the caller.
+  void closeIncoming() => _accepting = false;
+
+  Future<void> _ensureMayWrite() async {
+    final lease = writerLease;
+    if (lease == null) return;
+    await lease.ensureOwnership();
   }
 
   Future<void> _onSyncResult(StateUpdate event) async {
+    await _ensureMayWrite();
+
     // Process found outputs (new UTXOs we own)
     for (final found in event.foundOutputs) {
       // first, insert the transaction data in the known transactions table
@@ -104,6 +135,7 @@ class SyncEngine {
       );
     }
 
+    await _ensureMayWrite();
     await _walletRepository.saveLastSync(event.blkheight);
 
     if (event.foundOutputs.isNotEmpty || event.foundInputs.isNotEmpty) {
@@ -114,26 +146,18 @@ class SyncEngine {
   }
 
   Future<void> trySync() async {
+    if (!_accepting) return;
     if (_isSyncing) {
       Logger().i('[$_logTag] sync already in progress, skipping');
       return;
     }
     _isSyncing = true;
+    var announced = false;
     try {
       final wallet = await _walletRepository.readWallet();
+      if (!_accepting) return;
       if (wallet == null) {
         Logger().i('[$_logTag] no wallet, skipping');
-        return;
-      }
-
-      // B1.2: the frigate path is subscription-driven end to end — NO
-      // Dana-initiated batch scan. When frigate is the committed backend
-      // the blindbit engine stays off; the frigate subscription (which
-      // owns the writer lease, B2.3) delivers all state itself.
-      if (await SettingsRepository.instance.getChainBackend() ==
-          ChainBackendKind.frigate) {
-        Logger().i('[$_logTag] frigate backend committed, blindbit scan '
-            'skipped (B1.2: subscription-driven, no batch scan)');
         return;
       }
 
@@ -154,6 +178,8 @@ class SyncEngine {
 
       if (lastSync == null) {
         lastSync = await _heightFromBirthday(network);
+        await _ensureMayWrite();
+        if (!_accepting) return;
         await _walletRepository.saveLastSync(lastSync);
         Logger()
             .i('[$_logTag] initialized lastSync to birthday height $lastSync');
@@ -164,11 +190,15 @@ class SyncEngine {
         return;
       }
 
+      await _ensureMayWrite();
+      if (!_accepting) return;
+
       Logger().i('[$_logTag] syncing $lastSync -> $tip');
 
       final dustLimit = await settings.getDustLimit() ?? defaultDustLimit;
 
       onSyncStarted(lastSync + 1, tip);
+      announced = true;
 
       final unconfirmedSpentOutpoints =
           await _transactionsRepository.getUnconfirmedSpentOutpoints();
@@ -188,9 +218,13 @@ class SyncEngine {
 
       Logger().i('[$_logTag] sync complete, tip=$tip');
       onSyncComplete(true);
+    } on WriterLeaseLostException catch (e) {
+      Logger().e('[$_logTag] writer lease lost — scan aborted: $e');
+      onSyncComplete(false);
+      rethrow;
     } catch (e) {
       Logger().e('[$_logTag] sync error: $e');
-      onSyncComplete(false);
+      if (announced || _accepting) onSyncComplete(false);
     } finally {
       _isSyncing = false;
       _idleCompleter?.complete();

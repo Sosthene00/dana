@@ -38,6 +38,7 @@ import 'package:danawallet/repositories/owned_outputs_repository.dart';
 import 'package:danawallet/repositories/transactions_repository.dart';
 import 'package:danawallet/services/sync_service.dart';
 import 'package:danawallet/states/chain_state.dart';
+import 'package:danawallet/states/frigate_state.dart';
 import 'package:danawallet/states/sync_progress_state.dart';
 import 'package:danawallet/states/wallet_state.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -222,6 +223,7 @@ void main() {
 
     syncService = SyncService(
       chainState: ChainState(),
+      frigateState: FrigateState(),
       syncProgress: SyncProgressState.create(),
       walletState: walletState,
     );

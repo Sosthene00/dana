@@ -6,6 +6,7 @@ import 'package:danawallet/generated/rust/api/wallet.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
 import 'package:danawallet/services/frigate_subscription_controller.dart';
 import 'package:danawallet/services/sync_engine.dart';
+import 'package:danawallet/services/sync_host.dart';
 import 'package:danawallet/services/writer_lease.dart';
 import 'package:danawallet/states/frigate_state.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
@@ -27,15 +28,13 @@ void startCallback() {
 
 class SynchronizationTaskHandler extends TaskHandler {
   Future<void>? _initFuture;
-  SyncEngine? _engine;
-  FrigateSubscriptionController? _frigateWriter;
+  SyncHost? _host;
   int? _startHeight;
   int? _endHeight;
 
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
-    // First guard against accidental double calls
-    if (_engine != null) {
+    if (_host != null) {
       Logger().e('[BG] service already started, skipping');
       return;
     }
@@ -50,30 +49,52 @@ class SynchronizationTaskHandler extends TaskHandler {
       await FlutterForegroundTask.stopService();
       return;
     }
-    _engine = SyncEngine(
-      logTag: 'BG',
-      onSyncStarted: (start, end) {
-        _startHeight = start;
-        _endHeight = end;
-        FlutterForegroundTask.sendDataToMain({
-          bgKeyStartHeight: start,
-          bgKeyEndHeight: end,
-        });
-      },
-      onSyncComplete: (ok) {
-        _startHeight = null;
-        _endHeight = null;
-        FlutterForegroundTask.sendDataToMain({bgKeyComplete: ok});
-      },
-      onStateUpdated: (kind) async =>
-          FlutterForegroundTask.sendDataToMain({bgKeyRefresh: kind.wireName}),
-    );
-    unawaited(_engine!.trySync());
 
-    // B2.1: the frigate subscription lives in this foreground service. The
-    // service isolate claims the writer lease (B2.8) and writes sync state
-    // directly to the DB (B2.2); it is the SOLE writer while alive (B2.3).
-    unawaited(_startFrigateWriter());
+    _host = SyncHost(
+      lease: WriterLease(writerId: WriterLease.serviceWriterId),
+      buildScanner: _buildScanner,
+    );
+    final acquired = await _host!.start();
+    if (!acquired) {
+      Logger().w('[BG] writer lease held by a live writer — service starts '
+          'no scanner (B2.3)');
+    }
+  }
+
+  SyncScanner _buildScanner(ChainBackendKind kind, WriterLease lease) {
+    switch (kind) {
+      case ChainBackendKind.blindbit:
+        return BlindbitScanner(SyncEngine(
+          logTag: 'BG',
+          writerLease: lease,
+          onSyncStarted: (start, end) {
+            _startHeight = start;
+            _endHeight = end;
+            FlutterForegroundTask.sendDataToMain({
+              bgKeyStartHeight: start,
+              bgKeyEndHeight: end,
+            });
+          },
+          onSyncComplete: (ok) {
+            _startHeight = null;
+            _endHeight = null;
+            FlutterForegroundTask.sendDataToMain({bgKeyComplete: ok});
+          },
+          onStateUpdated: (refreshKind) async =>
+              FlutterForegroundTask.sendDataToMain(
+                  {bgKeyRefresh: refreshKind.wireName}),
+        ));
+      case ChainBackendKind.frigate:
+        final serviceFrigateState = FrigateState();
+        return FrigateScanner(FrigateSubscriptionController(
+          frigateState: serviceFrigateState,
+          writerLease: lease,
+          onGraduated: () => FlutterForegroundTask.sendDataToMain(
+              {bgKeyRefresh: RefreshKind.full.wireName}),
+          onEventProcessed: () => FlutterForegroundTask.sendDataToMain(
+              {bgKeyFrigateRefresh: true, ...serviceFrigateState.snapshot()}),
+        ));
+    }
   }
 
   @override
@@ -84,31 +105,17 @@ class SynchronizationTaskHandler extends TaskHandler {
 
   Future<void> _onRepeatEventAsync() async {
     await _ensureInit();
-    unawaited(_engine?.trySync());
+    await _onWake();
   }
 
   @override
   Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {
     Logger().i('[BG] service destroyed (isTimeout: $isTimeout)');
-    // graceful release: the writer lease is cleared so the next writer (a
-    // restarted service, or the app after takeover) proceeds immediately
-    // (B2.8); an abrupt reclaim leaves it to go stale instead (B2.5).
-    await _frigateWriter?.stop();
-    _frigateWriter = null;
-    if (_engine?.isSyncing == true) {
-      SpWallet.interruptSync();
-      if (!isTimeout) {
-        // Wait for trySync to drain so its onSyncComplete callback sends
-        // bgKeyComplete to the main isolate before we cancel the subscription
-        // in dispose(). This also prevents a double bgKeyComplete send.
-        // Skipped on timeout: the OS is reclaiming the service immediately and
-        // IPC delivery is not guaranteed; the main isolate's waitForCompletion
-        // timeout will deactivate the progress bar on its own.
-        await _engine!.waitForIdle();
-      }
-    }
-    _engine?.dispose();
-    _engine = null;
+    // Graceful release: the writer lease is cleared so the next writer
+    // proceeds immediately (B2.8). An abrupt reclaim skips the drain and
+    // leaves the lease to go stale (B2.5).
+    await _host?.stop(drain: !isTimeout);
+    _host = null;
     _startHeight = null;
     _endHeight = null;
   }
@@ -117,15 +124,13 @@ class SynchronizationTaskHandler extends TaskHandler {
   void onReceiveData(Object data) {
     if (data is Map) {
       if (data[bgKeySync] == true) {
-        unawaited(_onReceiveSyncRequest());
+        unawaited(_onWake());
       } else if (data[bgKeyInterrupt] == true) {
         Logger().i('[BG] interrupt requested');
         SpWallet.interruptSync();
-        // onSyncComplete fires naturally once interruptSync() takes effect,
-        // which sends bgKeyComplete to the main isolate and resolves its completer.
-      } else if (data[bgKeyRestartFrigate] == true) {
-        Logger().i('[BG] frigate restart requested by the main isolate (R11)');
-        unawaited(_restartFrigateWriter());
+      } else if (data[bgKeyApplyBackend] == true) {
+        Logger().i('[BG] apply backend requested by the main isolate');
+        unawaited(_applyBackend());
       } else {
         Logger().e('[BG] invalid data received: $data');
       }
@@ -134,10 +139,14 @@ class SynchronizationTaskHandler extends TaskHandler {
     }
   }
 
+  Future<void> _applyBackend() async {
+    await _ensureInit();
+    _startHeight = null;
+    _endHeight = null;
+    await _host?.applyBackend();
+  }
+
   Future<void> _ensureInit() {
-    // FRB forbids initializing twice (it throws "Should not initialize
-    // flutter_rust_bridge twice"); skip when the entrypoint is already up
-    // instead of crashing the service.
     if (RustLib.instance.initialized) {
       return Future.value();
     }
@@ -145,75 +154,10 @@ class SynchronizationTaskHandler extends TaskHandler {
     return _initFuture!;
   }
 
-  /// B2.1/B2.2/B2.3: start the frigate subscription in this service isolate
-  /// under the service writer identity. No-op when no frigate URL is
-  /// configured. If the writer lease is held by a live foreign writer (the
-  /// app-isolate fallback writer), retry briefly, then wait for the next
-  /// service start (B2.5) rather than ever writing concurrently (B2.3).
-  Future<void> _startFrigateWriter() async {
-    try {
-      final frigateUrl = await SettingsRepository.instance.getFrigateUrl();
-      if (frigateUrl == null || frigateUrl.isEmpty) return;
-
-      // The service holds the subscription — its lifecycle UI state (the
-      // catch-up bar and the unreachable banner, B4.3/B4.4) ships to the
-      // main isolate with every event ping.
-      final serviceFrigateState = FrigateState();
-      final controller = FrigateSubscriptionController(
-        frigateState: serviceFrigateState,
-        writerLease: WriterLease(writerId: WriterLease.serviceWriterId),
-        // graduation moved satoshis into owned_outputs — the app refreshes
-        // the confirmed balance from the repository. NOTE: the kind is
-        // [RefreshKind.lastSyncOnly] (sync_service passes it straight to
-        // WalletState.refreshAfterSync, which skips the DB re-read when
-        // set) — graduation must request a FULL refresh
-        // (RefreshKind.full) or the balance never repaints after a
-        // phase-2/history write.
-        onGraduated: () => FlutterForegroundTask.sendDataToMain(
-            {bgKeyRefresh: RefreshKind.full.wireName}),
-        // every processed event may have changed the candidate registry —
-        // the app re-reads it from the DB (B2.2) and applies the lifecycle
-        // snapshot (bar/banner, B4.3/B4.4).
-        onEventProcessed: () => FlutterForegroundTask.sendDataToMain(
-            {bgKeyFrigateRefresh: true, ...serviceFrigateState.snapshot()}),
-      );
-      _frigateWriter = controller;
-
-      for (var attempt = 0; attempt < 12; attempt++) {
-        if (await controller.start()) {
-          Logger().i('[BG] frigate subscription started in the foreground '
-              'service (B2.1) — sole sync-state writer (B2.3)');
-          return;
-        }
-        await Future<void>.delayed(const Duration(seconds: 5));
-      }
-      Logger().w('[BG] frigate writer lease still held after 60 s — '
-          'subscription not started in the service (B2.3 read-only)');
-    } catch (e) {
-      Logger().e('[BG] frigate service writer failed to start: $e');
-    }
-  }
-
-  /// R11 (owner ruling 2026-11-18): a saved frigate backend takes effect
-  /// immediately, in-session. The subscription lives in this service (B2.1)
-  /// and the app isolate stays read-only while the writer lease is held
-  /// (B2.3), so the app cannot restart it — on this request the service
-  /// itself re-evaluates the freshly committed settings: stop the current
-  /// writer (graceful lease release, B2.8) and start a new one from the
-  /// committed checkpoint (B1.2). No URL configured -> start() no-ops.
-  Future<void> _restartFrigateWriter() async {
-    try {
-      await _ensureInit();
-      await _frigateWriter?.stop();
-      _frigateWriter = null;
-      await _startFrigateWriter();
-    } catch (e) {
-      Logger().e('[BG] frigate writer restart failed: $e');
-    }
-  }
-
-  Future<void> _onReceiveSyncRequest() async {
-    if (_engine?.isSyncing == true &&
+  Future<void> _onWake() async {
+    final scanner = _host?.scanner;
+    if (scanner is BlindbitScanner &&
+        scanner.isSyncing &&
         _startHeight != null &&
         _endHeight != null) {
       Logger().i('[BG] sync already running, re-sending progress state');
@@ -221,10 +165,10 @@ class SynchronizationTaskHandler extends TaskHandler {
         bgKeyStartHeight: _startHeight,
         bgKeyEndHeight: _endHeight,
       });
-    } else {
-      Logger().i('[BG] sync triggered by main isolate');
-      await _ensureInit();
-      unawaited(_engine?.trySync());
+      return;
     }
+    Logger().i('[BG] sync triggered by main isolate');
+    await _ensureInit();
+    await _host?.wake();
   }
 }

@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:danawallet/repositories/frigate_disclosure_repository.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
-import 'package:danawallet/services/frigate_subscription_controller.dart';
+import 'package:danawallet/services/sync_orchestrator.dart';
 import 'package:danawallet/states/frigate_state.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -122,12 +122,10 @@ class _FrigatePublicWarningWatcherState
     }
     if (!mounted) return;
     context.read<FrigateState>().setPublicWarningPending(false);
-    // Restart the gated frigate leg with the ack in place (the service
-    // isolate re-evaluates on its own retry loop; this covers the
-    // app-isolate fallback writer).
+    // The host that holds the lease re-reads settings and starts the
+    // subscription. This isolate does not start a second scanner.
     try {
-      final controller = context.read<FrigateSubscriptionController>();
-      unawaited(controller.start());
+      unawaited(context.read<SyncOrchestrator>().applyBackend());
     } catch (_) {}
   }
 }

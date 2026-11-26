@@ -22,6 +22,7 @@ import 'package:danawallet/services/foreground_sync_service.dart';
 import 'package:danawallet/services/sync_orchestrator.dart';
 import 'package:danawallet/services/sync_service.dart';
 import 'package:danawallet/states/chain_state.dart';
+import 'package:danawallet/states/frigate_state.dart';
 import 'package:danawallet/states/permission_state.dart';
 import 'package:danawallet/states/sync_progress_state.dart';
 import 'package:danawallet/states/wallet_state.dart';
@@ -121,6 +122,7 @@ void main() {
 
     final orchestrator = SyncOrchestrator(
       chainState: chainState,
+      frigateState: FrigateState(),
       permissionState: _NotificationGrantedPermissionState(),
       syncProgress: SyncProgressState.create(),
       walletState: WalletState.create(),
@@ -180,6 +182,7 @@ void main() {
 
       final service = SyncService(
         chainState: chainState,
+        frigateState: FrigateState(),
         syncProgress: SyncProgressState.create(),
         walletState: WalletState.create(),
       );

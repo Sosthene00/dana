@@ -213,6 +213,20 @@ void main() {
       expect(restored.catchUpProgress, state.catchUpProgress);
       expect(restored.backendUnreachable, state.backendUnreachable);
     });
+
+    test('CaughtUp keeps the accepted tip and the snapshot carries it', () {
+      state.applyLifecycle(
+          const FrigateEventDto.tip(height: 900, hash: _tipHashA));
+      state.applyLifecycle(const FrigateEventDto.caughtUp());
+
+      expect(state.catchUpBarVisible, isFalse);
+      expect(state.tipHeight, 900,
+          reason: 'B5.5: the display tip survives catch-up and is not '
+              'cleared with the bar');
+
+      final restored = FrigateState()..applySnapshot(state.snapshot());
+      expect(restored.tipHeight, 900);
+    });
   });
 
   group('FrigateState unreachable banner (B4.4)', () {

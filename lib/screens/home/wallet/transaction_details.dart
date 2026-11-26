@@ -16,7 +16,9 @@ import 'package:danawallet/screens/contacts/contact_details.dart';
 import 'package:danawallet/screens/home/wallet/transaction_note_screen.dart';
 import 'package:danawallet/data/enums/amount_display_unit.dart';
 import 'package:danawallet/data/enums/fiat_currency.dart';
+import 'package:danawallet/services/active_chain_tip.dart';
 import 'package:danawallet/states/chain_state.dart';
+import 'package:danawallet/states/frigate_state.dart';
 import 'package:danawallet/states/contacts_state.dart';
 import 'package:danawallet/states/display_preferences_state.dart';
 import 'package:danawallet/states/fiat_exchange_rate_state.dart';
@@ -243,11 +245,17 @@ class TransactionDetailsScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildDetailsSection(
-      _TransactionData txData, ChainState chainState, AmountDisplayUnit unit) {
+  Widget _buildDetailsSection(_TransactionData txData, ChainState chainState,
+      FrigateState frigateState, AmountDisplayUnit unit) {
     int? confirmations;
-    if (txData.confirmationHeight != null && chainState.available) {
-      confirmations = chainState.tip - txData.confirmationHeight! + 1;
+    final tip = displayedChainTip(
+      backend: chainState.scanBackend,
+      blindbitAvailable: chainState.available,
+      blindbitTip: chainState.available ? chainState.tip : null,
+      frigateTip: frigateState.tipHeight,
+    );
+    if (txData.confirmationHeight != null && tip != null) {
+      confirmations = tip - txData.confirmationHeight! + 1;
       if (confirmations < 1) confirmations = 1;
     }
 
@@ -371,6 +379,7 @@ class TransactionDetailsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final walletState = Provider.of<WalletState>(context);
     final chainState = Provider.of<ChainState>(context);
+    final frigateState = Provider.of<FrigateState>(context);
     final displayPreference = Provider.of<DisplayPreferencesState>(context);
     final exchangeRate = Provider.of<FiatExchangeRateState>(context);
     final contactsState = Provider.of<ContactsState>(context);
@@ -463,8 +472,8 @@ class TransactionDetailsScreen extends StatelessWidget {
             const Divider(height: 1),
             _buildTransactionIdRow(context, txData.txid, network),
             const Divider(height: 1),
-            _buildDetailsSection(
-                txData, chainState, displayPreference.amountDisplayUnit),
+            _buildDetailsSection(txData, chainState, frigateState,
+                displayPreference.amountDisplayUnit),
           ],
         ),
       ),

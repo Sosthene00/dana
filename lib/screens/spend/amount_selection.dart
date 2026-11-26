@@ -16,7 +16,9 @@ import 'package:danawallet/states/display_preferences_state.dart';
 import 'package:danawallet/states/fiat_exchange_rate_state.dart';
 import 'package:danawallet/widgets/alerts/inline_warning_banner.dart';
 import 'package:danawallet/widgets/skeletons/screen_skeleton.dart';
+import 'package:danawallet/services/active_chain_tip.dart';
 import 'package:danawallet/states/chain_state.dart';
+import 'package:danawallet/states/frigate_state.dart';
 import 'package:danawallet/states/wallet_state.dart';
 import 'package:danawallet/widgets/buttons/currency_unit_toggle.dart';
 import 'package:danawallet/widgets/buttons/footer/footer_button.dart';
@@ -207,7 +209,8 @@ class AmountSelectionScreenState extends State<AmountSelectionScreen> {
   @override
   Widget build(BuildContext context) {
     final walletState = Provider.of<WalletState>(context, listen: false);
-    final chainState = Provider.of<ChainState>(context, listen: false);
+    final chainState = Provider.of<ChainState>(context);
+    final frigateState = Provider.of<FrigateState>(context);
     final contacts = Provider.of<ContactsState>(context, listen: false);
     final displayPreferences =
         Provider.of<DisplayPreferencesState>(context, listen: false);
@@ -225,8 +228,14 @@ class AmountSelectionScreenState extends State<AmountSelectionScreen> {
 
     final availableBalance = walletState.amount;
     int blocksToScan = 0;
-    if (walletState.lastSync != null && chainState.available) {
-      blocksToScan = chainState.tip - walletState.lastSync!;
+    final tip = displayedChainTip(
+      backend: chainState.scanBackend,
+      blindbitAvailable: chainState.available,
+      blindbitTip: chainState.available ? chainState.tip : null,
+      frigateTip: frigateState.tipHeight,
+    );
+    if (walletState.lastSync != null && tip != null) {
+      blocksToScan = tip - walletState.lastSync!;
     }
 
     final paymentCode = widget.paymentCode;

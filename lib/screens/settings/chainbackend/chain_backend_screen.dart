@@ -3,9 +3,8 @@ import 'dart:async';
 import 'package:danawallet/global_functions.dart';
 import 'package:danawallet/repositories/frigate_disclosure_repository.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
-import 'package:danawallet/services/foreground_sync_service.dart';
-import 'package:danawallet/services/frigate_subscription_controller.dart';
 import 'package:danawallet/services/frigate_url_probe.dart';
+import 'package:danawallet/services/sync_orchestrator.dart';
 import 'package:danawallet/states/chain_state.dart';
 import 'package:danawallet/widgets/skeletons/screen_skeleton.dart';
 import 'package:danawallet/widgets/wallet/frigate_public_warning.dart';
@@ -23,20 +22,19 @@ class ChainBackendScreen extends StatefulWidget {
   const ChainBackendScreen(
       {super.key,
       this.probe,
-      this.restartStopTimeout = const Duration(seconds: 10),
-      this.requestServiceRestart});
+      this.applyTimeout = const Duration(seconds: 10),
+      this.applyBackend});
 
   /// Injectable Frigate probe (tests). Never a subscribe.
   final Future<void> Function(String url)? probe;
 
-  /// Bound on the post-save Frigate stop() before the restart is abandoned.
-  final Duration restartStopTimeout;
+  /// Bound on the post-save host apply so a stuck scanner swap cannot
+  /// hold the screen open.
+  final Duration applyTimeout;
 
-  /// R11 seam (tests): how the screen asks a live foreground service to
-  /// re-evaluate the frigate settings in-session. Returns true when the
-  /// service owns the subscription leg and took the restart request — the
-  /// app isolate must then not stop()/start() in-process (B2.3).
-  final Future<bool> Function()? requestServiceRestart;
+  /// Test seam: the one command that asks the sync host to swap scanners.
+  /// Production uses [SyncOrchestrator.applyBackend].
+  final Future<void> Function()? applyBackend;
 
   @override
   State<ChainBackendScreen> createState() => _ChainBackendScreenState();
@@ -49,12 +47,6 @@ class _ChainBackendScreenState extends State<ChainBackendScreen> {
 
   Future<void> Function(String url) get _probe =>
       widget.probe ?? probeFrigateUrl;
-
-  /// R11: the in-session service restart seam (tests inject a recording
-  /// fake; production asks the live foreground service).
-  Future<bool> Function() get _requestServiceRestart =>
-      widget.requestServiceRestart ??
-      ForegroundSyncService.requestFrigateRestart;
 
   ChainBackendKind _selected = ChainBackendKind.blindbit;
   String? _inlineError;
@@ -100,7 +92,7 @@ class _ChainBackendScreenState extends State<ChainBackendScreen> {
       await _settings.setBlindbitUrl(null);
       await _settings.setChainBackend(ChainBackendKind.blindbit);
       await chainState.resetBlindbitUrl();
-      await _stopFrigate();
+      await _applyCommittedBackend();
       if (mounted) Navigator.of(context).pop();
       return;
     }
@@ -118,7 +110,7 @@ class _ChainBackendScreenState extends State<ChainBackendScreen> {
     await _settings.setBlindbitUrl(url);
     await _settings.setChainBackend(ChainBackendKind.blindbit);
     displayNotification('Setting blindbit url to $url');
-    await _stopFrigate();
+    await _applyCommittedBackend();
     if (mounted) Navigator.of(context).pop();
   }
 
@@ -164,55 +156,33 @@ class _ChainBackendScreenState extends State<ChainBackendScreen> {
         'warning path');
 
     if (!mounted) return;
-    await _restartFrigate();
+    await _applyCommittedBackend();
     if (mounted) Navigator.of(context).pop();
   }
 
-  Future<void> _stopFrigate() async {
+  /// One command, both directions. The host that holds the lease swaps
+  /// scanners. A swap that does not return in time does not hold the screen.
+  Future<void> _applyCommittedBackend() async {
     try {
-      final controller =
-          Provider.of<FrigateSubscriptionController>(context, listen: false);
-      try {
-        await controller.stop().timeout(widget.restartStopTimeout);
-      } on TimeoutException {
-        Logger().w('frigate stop: stop() did not return within '
-            '${widget.restartStopTimeout.inSeconds}s');
-      }
+      await _apply().timeout(widget.applyTimeout);
+    } on TimeoutException {
+      Logger().w('applyBackend did not return within '
+          '${widget.applyTimeout.inSeconds}s');
     } catch (e) {
-      Logger().w('frigate stop after switching to Blindbit failed: $e');
+      Logger().w('applyBackend after backend save failed: $e');
     }
   }
 
-  Future<void> _restartFrigate() async {
-    try {
-      final controller =
-          Provider.of<FrigateSubscriptionController>(context, listen: false);
-      // R11 (owner ruling 2026-11-18): a saved frigate backend takes effect
-      // immediately, in-session. The subscription lives in the foreground
-      // service (B2.1) and the app isolate stays read-only while the
-      // service holds the writer lease (B2.3) — so when the service owns
-      // the leg (this isolate's controller is not the writer), the SERVICE
-      // restarts the subscription from the freshly committed settings; an
-      // app-isolate start() here would be refused read-only and the saved
-      // URL would not apply until the next service start. The in-process
-      // restart below runs only when this isolate is the writer or no live
-      // service exists (Linux / service down).
-      if (!controller.isRunning && await _requestServiceRestart()) {
-        return;
-      }
-      var stopped = false;
-      try {
-        await controller.stop().timeout(widget.restartStopTimeout);
-        stopped = true;
-      } on TimeoutException {
-        Logger().w('frigate restart: stop() did not return within '
-            '${widget.restartStopTimeout.inSeconds}s — restart abandoned, '
-            'the subscription re-evaluates on its next service start');
-      }
-      if (stopped) unawaited(controller.start());
-    } catch (e) {
-      Logger().w('frigate restart after backend change failed: $e');
+  Future<void> _apply() async {
+    final injected = widget.applyBackend;
+    if (injected != null) {
+      await injected();
+      return;
     }
+    if (!mounted) return;
+    final orchestrator = Provider.of<SyncOrchestrator?>(context, listen: false);
+    if (orchestrator == null) return;
+    await orchestrator.applyBackend();
   }
 
   @override

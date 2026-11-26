@@ -1,5 +1,6 @@
 import 'package:bitcoin_ui/bitcoin_ui.dart';
 import 'package:danawallet/constants.dart';
+import 'package:danawallet/services/active_chain_tip.dart';
 import 'package:danawallet/data/enums/amount_display_unit.dart';
 import 'package:danawallet/data/models/bip353_address.dart';
 import 'package:danawallet/data/models/contact.dart';
@@ -498,9 +499,13 @@ class WalletScreenState extends State<WalletScreen> {
             maintainSize: true,
             maintainState: true,
             child: buildSyncProgress(frigateState.catchUpProgress)),
-        // Show offline status when chain sync has connection issues
+        // Blindbit offline banner. While Frigate is the scanner,
+        // reachability is the Frigate banner below (B5.5).
         Visibility(
-            visible: !chainState.available,
+            visible: showBlindbitOfflineBanner(
+              backend: chainState.scanBackend,
+              blindbitAvailable: chainState.available,
+            ),
             maintainAnimation: true,
             maintainSize: true,
             maintainState: true,
@@ -650,9 +655,13 @@ class WalletScreenState extends State<WalletScreen> {
                     maintainSize: true,
                     maintainState: true,
                     child: buildSyncProgress(syncProgress.progress)),
-                // Show offline status when chain sync has connection issues
+                // Blindbit offline banner. While Frigate is the scanner,
+                // reachability is the Frigate banner below (B5.5).
                 Visibility(
-                    visible: !chainState.available,
+                    visible: showBlindbitOfflineBanner(
+                      backend: chainState.scanBackend,
+                      blindbitAvailable: chainState.available,
+                    ),
                     maintainAnimation: true,
                     maintainSize: true,
                     maintainState: true,

@@ -7,7 +7,6 @@ import 'package:danawallet/generated/rust/frb_generated.dart';
 
 import 'package:danawallet/global_functions.dart';
 import 'package:danawallet/services/foreground_sync_service.dart';
-import 'package:danawallet/services/frigate_subscription_controller.dart';
 import 'package:danawallet/widgets/wallet/frigate_public_warning.dart';
 import 'package:danawallet/repositories/database_helper.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
@@ -16,7 +15,6 @@ import 'package:danawallet/screens/onboarding/introduction.dart';
 import 'package:danawallet/screens/onboarding/register_dana_address.dart';
 import 'package:danawallet/services/app_info_service.dart';
 import 'package:danawallet/services/logging_service.dart';
-import 'package:danawallet/services/writer_lease.dart';
 import 'package:danawallet/states/chain_state.dart';
 import 'package:danawallet/states/contacts_state.dart';
 import 'package:danawallet/states/display_preferences_state.dart';
@@ -64,21 +62,10 @@ void main() async {
   final displayPreferencesState = await DisplayPreferencesState.create();
   final fiatExchangeRate = FiatExchangeRateState();
   final frigateState = FrigateState();
-  final frigateController = FrigateSubscriptionController(
-    frigateState: frigateState,
-    // B2.3/B2.8: the app isolate is only the FALLBACK writer — it takes
-    // over from the foreground service exclusively through the writer lease
-    // (stale >= 10 s = service confirmed down).
-    writerLease: WriterLease(writerId: WriterLease.appWriterId),
-    // phase 3 (B3.3): a graduation moved satoshis into owned_outputs —
-    // refresh the confirmed balance from the repository.
-    onGraduated: () {
-      unawaited(walletState.refreshAfterSync());
-    },
-  );
 
   final syncOrchestrator = SyncOrchestrator(
     chainState: chainState,
+    frigateState: frigateState,
     syncProgress: syncProgress,
     walletState: walletState,
     permissionState: permissionState,
@@ -100,12 +87,19 @@ void main() async {
   Widget landingPage;
   if (walletLoaded) {
     final network = walletState.network;
-    final blindbitUrl = await SettingsRepository.instance.getBlindbitUrl() ??
-        network.defaultBlindbitUrl;
+    final settings = SettingsRepository.instance;
+    final blindbitUrl =
+        await settings.getBlindbitUrl() ?? network.defaultBlindbitUrl;
+    final backend = await settings.getChainBackend();
 
     chainState.initialize(network, blindbitUrl);
+    chainState.setScanBackend(backend);
 
-    await chainState.connect();
+    // B5.5: while Frigate is the scanner the tip comes from that
+    // subscription. Do not open a Blindbit session to fill it.
+    if (backend != ChainBackendKind.frigate) {
+      await chainState.connect();
+    }
 
     final addressRegistrationNeeded =
         await walletState.checkDanaAddressRegistrationNeeded();
@@ -116,14 +110,9 @@ void main() async {
 
     syncOrchestrator.start();
 
-    // Frigate leg (B2.1): the subscription lives in the foreground service —
-    // the service isolate claims the writer lease and writes sync state
-    // directly to the DB (B2.2). The app refreshes its UI state from the
-    // repositories and takes over writing only when the service is confirmed
-    // down (B2.3/B2.8). On Linux there is no foreground service, so the app
-    // isolate is the writer.
+    // The host (foreground service, or this isolate when that service is
+    // down) writes sync state. The app re-reads it.
     frigateState.refresh();
-    unawaited(startFrigateAppSide(frigateController));
     if (Platform.isAndroid) {
       // the service wrote sync state — re-read the registry/balance from the
       // DB instead of rescanning (B2.2), and apply the subscription
@@ -157,9 +146,6 @@ void main() async {
         ChangeNotifierProvider.value(value: walletState),
         ChangeNotifierProvider.value(value: syncProgress),
         ChangeNotifierProvider.value(value: frigateState),
-        // plain provider: the B5.3 warning dialog restarts the gated
-        // frigate leg after the user acknowledges
-        Provider.value(value: frigateController),
         ChangeNotifierProvider.value(value: chainState),
         ChangeNotifierProvider.value(value: HomeState()),
         ChangeNotifierProvider.value(value: permissionState),
@@ -195,31 +181,6 @@ class SilentPaymentApp extends StatelessWidget {
           ),
           home: FrigatePublicWarningWatcher(child: landingPage));
     });
-  }
-}
-
-/// App-side frigate writer handoff (B2.3/B2.8): on Android, give the
-/// foreground-service isolate a head start to claim the writer lease; if a
-/// fresh service claim appears, the app stays read-only (B2.1/B2.2). If the
-/// lease stays unclaimed/stale past the grace window, the service is
-/// confirmed down and the app takes over writing in-process. On Linux there
-/// is no foreground service — the app isolate is the writer.
-Future<void> startFrigateAppSide(
-    FrigateSubscriptionController controller) async {
-  if (Platform.isAndroid) {
-    final serviceWriterLive = await waitForServiceWriterClaim();
-    if (serviceWriterLive) {
-      Logger().i('frigate: foreground service holds the writer lease — '
-          'app stays read-only (B2.1/B2.3)');
-      return;
-    }
-    Logger().i('frigate: no live service writer after the grace window — '
-        'app takes over writing (B2.3/B2.8)');
-  }
-  try {
-    await controller.start();
-  } catch (e) {
-    Logger().e('frigate app-side writer failed to start: $e');
   }
 }
 
