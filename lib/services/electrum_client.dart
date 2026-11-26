@@ -60,6 +60,17 @@ class ElectrumClient {
   /// leaving a connected-but-silent socket (half-open after a NAT/conntrack
   /// drop, or a stalled server) hanging every call forever.
   final Duration callTimeout;
+
+  /// Keepalive interval (F-R12b). Every [keepaliveInterval] the client sends
+  /// a `server.ping` — the electrum-protocol liveness probe. With no
+  /// in-flight calls (the steady state of a subscribed confirmation monitor)
+  /// the F-R12a per-call timeout never arms, so a half-open socket would sit
+  /// silently dead forever: no notifications, no error, `done` never
+  /// completes, and the B3.7 reconnect never fires. The ping rides the same
+  /// per-call timeout: over a blackholed socket it times out, the connection
+  /// is torn down and the monitor reconnects.
+  final Duration keepaliveInterval;
+
   final Socket _socket;
 
   int _nextId = 0;
@@ -67,8 +78,11 @@ class ElectrumClient {
   final _notifications = StreamController<ElectrumNotification>.broadcast();
   final Completer<void> _done = Completer<void>();
   bool _closed = false;
+  Timer? _keepalive;
+  bool _pingInFlight = false;
 
-  ElectrumClient._(this.host, this.port, this.callTimeout, this._socket) {
+  ElectrumClient._(this.host, this.port, this.callTimeout,
+      this.keepaliveInterval, this._socket) {
     _socket
         .cast<List<int>>()
         .transform(utf8.decoder)
@@ -85,6 +99,7 @@ class ElectrumClient {
   static Future<ElectrumClient> connect(
     String endpoint, {
     Duration timeout = const Duration(seconds: 10),
+    Duration keepaliveInterval = const Duration(seconds: 30),
   }) async {
     final colon = endpoint.lastIndexOf(':');
     if (colon <= 0 || colon == endpoint.length - 1) {
@@ -94,9 +109,13 @@ class ElectrumClient {
     final port = int.parse(endpoint.substring(colon + 1));
 
     final socket = await Socket.connect(host, port, timeout: timeout);
-    final client = ElectrumClient._(host, port, timeout, socket);
+    final client =
+        ElectrumClient._(host, port, timeout, keepaliveInterval, socket);
     // Wire contract: server.version is the first message on a fresh socket.
     await client._call('server.version', ['danawallet-frigate', '1.4']);
+    // F-R12b: only after a successful handshake — a failed connect() must
+    // not leak a timer.
+    client._startKeepalive();
     return client;
   }
 
@@ -138,11 +157,37 @@ class ElectrumClient {
     });
   }
 
+  /// Start the F-R12b keepalive: a periodic `server.ping` whose reply (or
+  /// timeout) proves the socket is still alive. A server that ANSWERS the
+  /// ping with an error is alive (electrs builds without ping support keep
+  /// the subscription path intact) — only silence kills the connection.
+  void _startKeepalive() {
+    _keepalive = Timer.periodic(keepaliveInterval, (_) => _ping());
+  }
+
+  void _ping() {
+    if (_closed || _pingInFlight) return;
+    _pingInFlight = true;
+    _call('server.ping', const []).then(
+      (_) {},
+      onError: (Object e) {
+        // TimeoutException: _call already tore the connection down (every
+        // pending call failed, done completes — B3.7 reconnect fires).
+        // ElectrumServerException: the server ANSWERED (alive) — keep the
+        // socket. Anything else (client closed mid-ping): nothing to do.
+      },
+    ).whenComplete(() {
+      _pingInFlight = false;
+    });
+  }
+
   /// Kill the connection after it went bad (call timeout): fail every pending
   /// call and destroy the socket so `done` completes for the reconnect path.
   void _teardown(String reason) {
     if (_closed) return;
     _closed = true;
+    _keepalive?.cancel();
+    _keepalive = null;
     for (final completer in _pending.values) {
       if (!completer.isCompleted) {
         completer.completeError(TimeoutException(reason, callTimeout));
@@ -240,6 +285,8 @@ class ElectrumClient {
   Future<void> close() async {
     final wasClosed = _closed;
     _closed = true;
+    _keepalive?.cancel();
+    _keepalive = null;
     for (final completer in _pending.values) {
       if (!completer.isCompleted) {
         completer.completeError(StateError('electrum client closed'));

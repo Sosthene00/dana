@@ -148,6 +148,92 @@ void main() {
       // confirmation-monitor path) fires instead of limping on half-open.
       await expectLater(client.done, completes);
     }, timeout: const Timeout(Duration(seconds: 5)));
+
+    test(
+        'F-R12b: an idle blackholed connection is torn down so done completes',
+        () async {
+      // The audit finding (t_037006b4) second half: after the handshake and a
+      // subscription there are NO in-flight calls — the F-R12a per-call
+      // timeout never arms, and a half-open socket (mobile network transition)
+      // leaves the connection silently dead: done never completes, the B3.7
+      // reconnect never fires, confirmation monitoring stalls until app
+      // restart. The server here swallows every further request and never
+      // replies — the client MUST notice on its own (keepalive) and tear down.
+      server.handler = (method, params) {
+        if (method == 'server.version') return ['MockElectrum 1.0', '1.4'];
+        if (method == 'blockchain.scripthash.subscribe') return 'statusA';
+        throw Exception('unexpected method $method');
+      };
+
+      final client = await ElectrumClient.connect(
+        '127.0.0.1:$port',
+        timeout: const Duration(milliseconds: 300),
+        keepaliveInterval: const Duration(milliseconds: 200),
+      );
+      await client.subscribeScripthash('cafe');
+
+      // From now on the connection is a blackhole: the keepalive probe is
+      // swallowed (no reply, no FIN) — exactly a half-open NAT/conntrack drop.
+      server.silentMethods.add('server.ping');
+
+      // The next keepalive ping goes unanswered; the per-call timeout tears
+      // the connection down well inside this window.
+      await expectLater(client.done, completes);
+    }, timeout: const Timeout(Duration(seconds: 8)));
+
+    test('F-R12b: keepalive pings the server periodically while idle',
+        () async {
+      server.handler = (method, params) {
+        if (method == 'server.version') return ['MockElectrum 1.0', '1.4'];
+        if (method == 'server.ping') return null;
+        if (method == 'blockchain.scripthash.subscribe') return 'statusA';
+        throw Exception('unexpected method $method');
+      };
+
+      final client = await ElectrumClient.connect(
+        '127.0.0.1:$port',
+        keepaliveInterval: const Duration(milliseconds: 150),
+      );
+      await client.subscribeScripthash('cafe');
+
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+
+      final pings = server.requestMethods.where((m) => m == 'server.ping');
+      expect(pings.length, greaterThanOrEqualTo(3));
+      await client.close();
+    }, timeout: const Timeout(Duration(seconds: 5)));
+
+    test(
+        'F-R12b: a server error reply to the ping keeps the connection alive',
+        () async {
+      // electrs builds without ping support answer `server.ping` with a
+      // JSON-RPC error — that is a REPLY, so the socket is alive and must
+      // NOT be torn down.
+      server.handler = (method, params) {
+        if (method == 'server.version') return ['MockElectrum 1.0', '1.4'];
+        if (method == 'server.ping') {
+          throw Exception('method server.ping not supported');
+        }
+        if (method == 'blockchain.scripthash.get_history') return [];
+        throw Exception('unexpected method $method');
+      };
+
+      final client = await ElectrumClient.connect(
+        '127.0.0.1:$port',
+        keepaliveInterval: const Duration(milliseconds: 150),
+      );
+
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+
+      // Still usable...
+      expect(await client.getHistory('cafe'), isEmpty);
+      // ...and done has NOT completed.
+      await expectLater(
+        client.done.timeout(const Duration(milliseconds: 300)),
+        throwsA(isA<TimeoutException>()),
+      );
+      await client.close();
+    }, timeout: const Timeout(Duration(seconds: 5)));
   });
 
   group('electrumScripthash', () {
