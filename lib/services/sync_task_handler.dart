@@ -123,6 +123,9 @@ class SynchronizationTaskHandler extends TaskHandler {
         SpWallet.interruptSync();
         // onSyncComplete fires naturally once interruptSync() takes effect,
         // which sends bgKeyComplete to the main isolate and resolves its completer.
+      } else if (data[bgKeyRestartFrigate] == true) {
+        Logger().i('[BG] frigate restart requested by the main isolate (R11)');
+        unawaited(_restartFrigateWriter());
       } else {
         Logger().e('[BG] invalid data received: $data');
       }
@@ -188,6 +191,24 @@ class SynchronizationTaskHandler extends TaskHandler {
           'subscription not started in the service (B2.3 read-only)');
     } catch (e) {
       Logger().e('[BG] frigate service writer failed to start: $e');
+    }
+  }
+
+  /// R11 (owner ruling 2026-11-18): a saved frigate backend takes effect
+  /// immediately, in-session. The subscription lives in this service (B2.1)
+  /// and the app isolate stays read-only while the writer lease is held
+  /// (B2.3), so the app cannot restart it — on this request the service
+  /// itself re-evaluates the freshly committed settings: stop the current
+  /// writer (graceful lease release, B2.8) and start a new one from the
+  /// committed checkpoint (B1.2). No URL configured -> start() no-ops.
+  Future<void> _restartFrigateWriter() async {
+    try {
+      await _ensureInit();
+      await _frigateWriter?.stop();
+      _frigateWriter = null;
+      await _startFrigateWriter();
+    } catch (e) {
+      Logger().e('[BG] frigate writer restart failed: $e');
     }
   }
 

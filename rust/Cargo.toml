@@ -8,8 +8,8 @@ crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
 flutter_rust_bridge = "=2.13.0"
-spdk-wallet = { git = "https://github.com/cygnet3/spdk", rev = "9db53018c3d5d4bebd5c4a9b1a472edd553feb64" }
-frigate-scanner = { package = "frigate", git = "https://github.com/cygnet3/spdk", rev = "9db53018c3d5d4bebd5c4a9b1a472edd553feb64" }
+spdk-wallet = { git = "https://github.com/Sosthene00/spdk", rev = "7e52f1bbdb1b079f3688630f2a9772c6e5a55ca7" }
+frigate-scanner = { package = "frigate", git = "https://github.com/Sosthene00/spdk", rev = "7e52f1bbdb1b079f3688630f2a9772c6e5a55ca7" }
 lazy_static = "1.4"
 anyhow = "1.0"
 serde = { version = "1.0.188", features = ["derive"] }
@@ -30,3 +30,11 @@ base64 = "0.22.1"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
+
+# ISS-001 fix: override esc (pinned transitively by spdk) with our fork that accepts
+# Frigate 1.4.1's header-notification params object ({"header":{...}}) in addition to
+# the standard seq shape. Without this, every block notification kills the connection.
+# Upstream PR pending; drop this stanza once bitcoindevkit/electrum_streaming_client
+# merges a fix containing it.
+[patch."https://github.com/bitcoindevkit/electrum_streaming_client"]
+electrum_streaming_client = { git = "https://github.com/still-gleam/electrum_streaming_client", branch = "iss001-frigate-header-params" }

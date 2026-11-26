@@ -1,3 +1,6 @@
+import 'dart:io';
+
+import 'package:danawallet/constants.dart';
 import 'package:danawallet/services/sync_task_handler.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
@@ -114,5 +117,21 @@ class ForegroundSyncService {
     if (!await _adapter.isRunning()) return;
     await _adapter.stopService();
     Logger().i('Android foreground service stopped');
+  }
+
+  /// R11: ask the live foreground service to re-evaluate the frigate
+  /// settings in-session and restart the subscription from the freshly
+  /// committed settings. The subscription lives in the service isolate
+  /// (B2.1) and the app isolate stays read-only while the service holds the
+  /// writer lease (B2.3) — an app-isolate start() would be refused and the
+  /// saved URL would not apply until the next service start. Returns true
+  /// when the request was delivered to a running service — the caller must
+  /// then NOT also stop()/start() in-process (two writers is a spec
+  /// violation, B2.3).
+  static Future<bool> requestFrigateRestart() async {
+    if (!Platform.isAndroid) return false;
+    if (!await FlutterForegroundTask.isRunningService) return false;
+    FlutterForegroundTask.sendDataToTask({bgKeyRestartFrigate: true});
+    return true;
   }
 }

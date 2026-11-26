@@ -45,6 +45,13 @@ class _RecordingController extends FrigateSubscriptionController {
   String? urlAtStart;
   bool? publicAtStart;
 
+  /// R11 seam: whether this isolate's controller OWNS the subscription leg.
+  /// False = a foreground service (or nobody) holds the writer.
+  bool running = false;
+
+  @override
+  bool get isRunning => running;
+
   @override
   Future<void> stop() async {
     stopCalls++;
@@ -90,11 +97,13 @@ void main() {
   /// (the F-R12b seam): the post-save restart must never wedge the flow.
   Future<_RecordingController> saveWithController(WidgetTester tester,
       {required _RecordingController controller,
-      Duration restartStopTimeout = const Duration(seconds: 1)}) async {
+      Duration restartStopTimeout = const Duration(seconds: 1),
+      Future<bool> Function()? requestServiceRestart}) async {
     await tester.pumpWidget(wrapWithController(
       ChainBackendScreen(
         probe: (url) async {},
         restartStopTimeout: restartStopTimeout,
+        requestServiceRestart: requestServiceRestart,
       ),
       controller: controller,
     ));
@@ -329,5 +338,64 @@ void main() {
 
     expect(find.byType(ChainBackendScreen), findsNothing);
     expect(controller.startCalled, isFalse);
+  });
+
+  testWidgets(
+      'R11: with the foreground service owning the subscription leg, a '
+      'frigate save restarts it in the service — never a read-only app start',
+      (tester) async {
+    // The app-isolate controller is NOT the writer: the foreground service
+    // holds the writer lease (B2.1/B2.3) — the exact on-device state where
+    // the pre-R11-fix save stopped the subscription and nothing restarted
+    // it (app-isolate start() refused read-only, service never re-evaluated).
+    final controller = _RecordingController();
+    var restartRequests = 0;
+    await saveWithController(tester, controller: controller,
+        requestServiceRestart: () async {
+      restartRequests++;
+      return true; // the live service accepted the in-session restart
+    });
+
+    expect(restartRequests, 1,
+        reason: 'R11: the save must ask the live service to re-evaluate the '
+            'freshly committed settings in-session');
+    expect(controller.stopCalls, 0,
+        reason: 'the app must not tear the service-owned Rust subscription '
+            'down from another isolate');
+    expect(controller.startCalls, 0,
+        reason: 'while the service holds the writer lease the app-isolate '
+            'start() stays read-only (B2.3) — a refused start leaves the '
+            'saved URL unapplied until the next service start');
+  });
+
+  testWidgets(
+      'R11: no live service — the save still restarts the subscription '
+      'in-process (the app-isolate fallback)', (tester) async {
+    final controller = _RecordingController();
+    await saveWithController(tester, controller: controller,
+        requestServiceRestart: () async => false);
+
+    expect(controller.stopCalls, 1);
+    expect(controller.startCalls, 1,
+        reason: 'with no live service the app isolate is the writer — the '
+            'in-process restart applies the saved settings immediately');
+  });
+
+  testWidgets(
+      'R11: the app isolate already holds the writer — the save restarts '
+      'in-process and does not disturb the service', (tester) async {
+    final controller = _RecordingController()..running = true;
+    var restartRequests = 0;
+    await saveWithController(tester, controller: controller,
+        requestServiceRestart: () async {
+      restartRequests++;
+      return true;
+    });
+
+    expect(restartRequests, 0,
+        reason: 'the app isolate is the writer; the service must not be '
+            'asked to restart a leg it does not own');
+    expect(controller.stopCalls, 1);
+    expect(controller.startCalls, 1);
   });
 }
