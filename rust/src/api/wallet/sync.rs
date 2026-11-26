@@ -64,6 +64,10 @@ impl SpWallet {
 
         let mut last_update = Instant::now();
         while let Some(update) = rx.next().await {
+            // A scan that ends prematurely (backend fetch failure) surfaces
+            // as an error item: fail the sync loudly instead of reporting an
+            // up-to-date wallet that discovered nothing.
+            let update = update?;
             record_block_scan_result(update, &mut last_update, end)?;
         }
 

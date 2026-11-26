@@ -119,7 +119,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 [[package]]
 name = "backend-blindbit-v1"
 version = "0.0.0"
-source = "git+https://github.com/Sosthene00/spdk?rev=7e52f1bbdb1b079f3688630f2a9772c6e5a55ca7#7e52f1bbdb1b079f3688630f2a9772c6e5a55ca7"
+source = "git+https://github.com/Sosthene00/spdk?rev=ed4b99581e6092200689d7e94fdfb94c251aef2e#ed4b99581e6092200689d7e94fdfb94c251aef2e"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -135,7 +135,7 @@ dependencies = [
 [[package]]
 name = "backend-frigate"
 version = "0.0.0"
-source = "git+https://github.com/Sosthene00/spdk?rev=7e52f1bbdb1b079f3688630f2a9772c6e5a55ca7#7e52f1bbdb1b079f3688630f2a9772c6e5a55ca7"
+source = "git+https://github.com/Sosthene00/spdk?rev=ed4b99581e6092200689d7e94fdfb94c251aef2e#ed4b99581e6092200689d7e94fdfb94c251aef2e"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -818,7 +818,7 @@ dependencies = [
 [[package]]
 name = "frigate"
 version = "0.1.0"
-source = "git+https://github.com/Sosthene00/spdk?rev=7e52f1bbdb1b079f3688630f2a9772c6e5a55ca7#7e52f1bbdb1b079f3688630f2a9772c6e5a55ca7"
+source = "git+https://github.com/Sosthene00/spdk?rev=ed4b99581e6092200689d7e94fdfb94c251aef2e#ed4b99581e6092200689d7e94fdfb94c251aef2e"
 dependencies = [
  "anyhow",
  "backend-frigate",
@@ -1399,7 +1399,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 [[package]]
 name = "local-scanner"
 version = "0.0.0"
-source = "git+https://github.com/Sosthene00/spdk?rev=7e52f1bbdb1b079f3688630f2a9772c6e5a55ca7#7e52f1bbdb1b079f3688630f2a9772c6e5a55ca7"
+source = "git+https://github.com/Sosthene00/spdk?rev=ed4b99581e6092200689d7e94fdfb94c251aef2e#ed4b99581e6092200689d7e94fdfb94c251aef2e"
 dependencies = [
  "anyhow",
  "bitcoin 0.32.102",
@@ -2213,7 +2213,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 [[package]]
 name = "silentpayments"
 version = "0.8.1"
-source = "git+https://github.com/Sosthene00/spdk?rev=7e52f1bbdb1b079f3688630f2a9772c6e5a55ca7#7e52f1bbdb1b079f3688630f2a9772c6e5a55ca7"
+source = "git+https://github.com/Sosthene00/spdk?rev=ed4b99581e6092200689d7e94fdfb94c251aef2e#ed4b99581e6092200689d7e94fdfb94c251aef2e"
 dependencies = [
  "bech32 0.9.1",
  "bitcoin_hashes 0.13.1",
@@ -2273,7 +2273,7 @@ dependencies = [
 [[package]]
 name = "spdk-core"
 version = "0.0.0"
-source = "git+https://github.com/Sosthene00/spdk?rev=7e52f1bbdb1b079f3688630f2a9772c6e5a55ca7#7e52f1bbdb1b079f3688630f2a9772c6e5a55ca7"
+source = "git+https://github.com/Sosthene00/spdk?rev=ed4b99581e6092200689d7e94fdfb94c251aef2e#ed4b99581e6092200689d7e94fdfb94c251aef2e"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2286,7 +2286,7 @@ dependencies = [
 [[package]]
 name = "spdk-wallet"
 version = "0.0.0"
-source = "git+https://github.com/Sosthene00/spdk?rev=7e52f1bbdb1b079f3688630f2a9772c6e5a55ca7#7e52f1bbdb1b079f3688630f2a9772c6e5a55ca7"
+source = "git+https://github.com/Sosthene00/spdk?rev=ed4b99581e6092200689d7e94fdfb94c251aef2e#ed4b99581e6092200689d7e94fdfb94c251aef2e"
 dependencies = [
  "anyhow",
  "backend-blindbit-v1",
