@@ -55,9 +55,19 @@ class BlindbitScanner implements SyncScanner {
     _engine.closeIncoming();
     if (drain && _engine.isSyncing) {
       SpWallet.interruptSync();
-      await _engine.waitForIdle();
+      try {
+        // M-a: waitForIdle THROWS on timeout — the drain FAILED (Rust has
+        // not honoured interruptSync, the scan may still be writing).
+        // Dispose here so no further scan events are written, but let the
+        // failure propagate: the host must never start another writer over
+        // an undrained scan.
+        await _engine.waitForIdle();
+      } finally {
+        _engine.dispose();
+      }
+    } else {
+      _engine.dispose();
     }
-    _engine.dispose();
   }
 }
 
@@ -86,6 +96,15 @@ class FrigateScanner implements SyncScanner {
 
   @override
   Future<void> stop({bool drain = true}) => _controller.stopSubscription();
+}
+
+/// Thrown when a scanner drain does not finish within the host's bounded
+/// timeout (M-a): the in-flight scan may still be writing, so the swap
+/// FAILED — the host did not start another scanner, the slot is left empty
+/// and the lease stays held.
+class SyncDrainTimeoutException extends TimeoutException {
+  SyncDrainTimeoutException({String? message, Duration? duration})
+      : super(message, duration);
 }
 
 /// Lease-acquisition retry policy (review blocker B1: one-shot acquisition
@@ -130,6 +149,7 @@ class SyncHost {
     this.standDownProbe,
     this.onStandDown,
     this.standDownInterval = const Duration(seconds: 5),
+    this.drainTimeout = const Duration(seconds: 10),
   });
 
   final WriterLease lease;
@@ -155,6 +175,10 @@ class SyncHost {
 
   /// How often the stand-down probe runs while the host holds the lease.
   final Duration standDownInterval;
+
+  /// Bounded wait for the occupant's drain during a backend swap (M-a). A
+  /// drain outlasting this fails the swap.
+  final Duration drainTimeout;
 
   SyncScanner? _scanner;
   bool _running = false;
@@ -206,10 +230,26 @@ class SyncHost {
 
   /// Stop the occupant, re-read the committed backend, start that scanner.
   /// The lease stays held across the swap.
+  ///
+  /// M-a: a drain that does not finish within [drainTimeout] is a FAILED
+  /// swap, not a proceed — the in-flight scan may still be writing (Rust
+  /// has not honoured interruptSync). The host does NOT start the other
+  /// scanner; the slot is left EMPTY (empty-slot policy: no scanner runs,
+  /// the host keeps the lease, this isolate stays read-only until a later
+  /// [start]/[applyBackend] succeeds) and [SyncDrainTimeoutException] is
+  /// thrown to the caller.
   Future<void> applyBackend() async {
     if (!_running) return;
-    await _scanner?.stop();
+    final old = _scanner;
     _scanner = null;
+    try {
+      await old?.stop().timeout(drainTimeout);
+    } on TimeoutException {
+      throw SyncDrainTimeoutException(
+          message: 'scanner drain timed out — swap failed, slot left empty '
+              '(M-a two-writer hole)',
+          duration: drainTimeout);
+    }
     await _occupy();
   }
 

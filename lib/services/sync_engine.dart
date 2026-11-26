@@ -235,13 +235,16 @@ class SyncEngine {
   /// Waits until any active [trySync] call has fully unwound, including its
   /// [onSyncComplete] callback. Returns immediately if idle.
   ///
-  /// [timeout] guards against Rust taking too long to honour [interruptSync].
+  /// [timeout] guards against Rust taking too long to honour [interruptSync]:
+  /// on timeout this THROWS [TimeoutException] (M-a) instead of returning —
+  /// a timed-out drain is a FAILED swap, never a proceed: the caller must
+  /// not start another writer while the scan may still be writing.
   Future<void> waitForIdle({
     Duration timeout = const Duration(seconds: 5),
   }) {
     if (!_isSyncing) return Future.value();
     _idleCompleter ??= Completer<void>();
-    return _idleCompleter!.future.timeout(timeout, onTimeout: () {});
+    return _idleCompleter!.future.timeout(timeout);
   }
 
   Future<int> _heightFromBirthday(Network network) async {
