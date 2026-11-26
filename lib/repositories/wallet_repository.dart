@@ -120,6 +120,16 @@ class WalletRepository {
     return timestamp?.toDate();
   }
 
+  /// Monotonic checkpoint advance (owner ruling R14, 2026-11-26): whatever
+  /// height one sync backend reached is valid for the other, so any backend
+  /// may push the shared `lastscan` checkpoint forward — never backward.
+  Future<void> advanceLastSync(int height) async {
+    final current = await nonSecureStorage.getInt(_keyLastSync);
+    if (current == null || height > current) {
+      await nonSecureStorage.setInt(_keyLastSync, height);
+    }
+  }
+
   Future<void> saveLastSync(int? lastSync) async {
     if (lastSync != null) {
       await nonSecureStorage.setInt(_keyLastSync, lastSync);

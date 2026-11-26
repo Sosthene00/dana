@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:danawallet/generated/rust/api/structs/frigate_event.dart';
 import 'package:danawallet/generated/rust/api/structs/owned_output.dart';
 import 'package:danawallet/repositories/frigate_candidates_repository.dart';
+import 'package:danawallet/repositories/wallet_repository.dart';
 import 'package:danawallet/repositories/owned_outputs_repository.dart';
 import 'package:danawallet/repositories/transactions_repository.dart';
 import 'package:danawallet/services/writer_lease.dart';
@@ -24,10 +25,13 @@ import 'package:logger/logger.dart';
 /// exactly once). A confirmed outpoint that still sits as a pending
 /// candidate leaves the unconfirmed line (B4.1) — it is confirmed state now.
 ///
-/// Phase scope: Tip/CaughtUp/Spent/Disconnected touch no state here — the
-/// catch-up bar and the unreachable banner are lifecycle UI state
-/// (B4.3/B4.4, handled by FrigateState.applyLifecycle); graduation of
-/// mempool candidates is phase 3 (B3.3, electrum confirmation alone).
+/// Phase scope: Spent/Disconnected touch no state here — the catch-up bar
+/// and the unreachable banner are lifecycle UI state (B4.3/B4.4, handled by
+/// FrigateState.applyLifecycle); graduation of mempool candidates is phase 3
+/// (B3.3, electrum confirmation alone). R14: Tip/CaughtUp advance the SHARED
+/// lastscan checkpoint (monotonically, via WalletRepository.advanceLastSync)
+/// — the frigate path and the blindbit path keep one checkpoint, so a
+/// backend switch never rewinds it.
 class FrigateEventHandler {
   final FrigateCandidatesRepository _candidatesRepository;
   final OwnedOutputsRepository _ownedOutputsRepository;
@@ -54,10 +58,23 @@ class FrigateEventHandler {
   /// without a writer.
   final WriterLease? writerLease;
 
+  final WalletRepository? _walletRepositoryOverride;
+
+  /// Resolved lazily so tests/handlers that never touch checkpoint state
+  /// never construct WalletRepository's SharedPreferencesAsync.
+  WalletRepository get _walletRepository =>
+      _walletRepositoryOverride ?? WalletRepository.instance;
+
+  /// Last height reported by a Tip event; the CaughtUp handler advances the
+  /// shared checkpoint to it (the scanner emits Confirmed only on discovery,
+  /// so quiet blocks advance the checkpoint only here).
+  int? _lastTipHeight;
+
   FrigateEventHandler({
     FrigateCandidatesRepository? candidatesRepository,
     OwnedOutputsRepository? ownedOutputsRepository,
     TransactionsRepository? transactionsRepository,
+    WalletRepository? walletRepository,
     this.onChanged,
     this.onCandidatesRecorded,
     this.onConfirmed,
@@ -68,7 +85,8 @@ class FrigateEventHandler {
         _ownedOutputsRepository =
             ownedOutputsRepository ?? OwnedOutputsRepository.instance,
         _transactionsRepository =
-            transactionsRepository ?? TransactionsRepository.instance;
+            transactionsRepository ?? TransactionsRepository.instance,
+        _walletRepositoryOverride = walletRepository;
 
   Future<void> handleEvent(FrigateEventDto event) async {
     switch (event) {
@@ -80,8 +98,17 @@ class FrigateEventHandler {
           :final foundOutputs
         ):
         await _recordConfirmedReceipts(blkheight, blkhash, foundOutputs);
-      case FrigateEventDto_Tip():
+      case FrigateEventDto_Tip(:final height):
+        // R14: remember the tip so the following CaughtUp can advance the
+        // shared checkpoint to it (CaughtUp itself carries no height).
+        _lastTipHeight = height;
       case FrigateEventDto_CaughtUp():
+        // R14: the history replay is complete — everything through the last
+        // seen tip is synced, so the shared checkpoint may move there.
+        final tip = _lastTipHeight;
+        if (tip != null) {
+          await _walletRepository.advanceLastSync(tip);
+        }
       case FrigateEventDto_Spent():
       case FrigateEventDto_Disconnected():
         // lifecycle-only events (see class doc); sync state is untouched.
@@ -99,7 +126,6 @@ class FrigateEventHandler {
   /// also sit in the unconfirmed line (B4.1).
   Future<void> _recordConfirmedReceipts(
       int blkheight, String blkhash, List<OwnedOutput> outputs) async {
-    if (outputs.isEmpty) return;
     // B2.8: the lease check sits inside the sync-state write path — a live
     // foreign writer must never see this registry written concurrently.
     await writerLease?.ensureOwnership();
@@ -118,10 +144,17 @@ class FrigateEventHandler {
         await _candidatesRepository.markConfirmed(outpoint.txid, outpoint.vout);
       }
     }
-    Logger().i(
-        'frigate history leg: ${outputs.length} confirmed receipt(s) written to owned_outputs (R3/B3.4)');
-    onChanged?.call();
-    onConfirmed?.call();
+    if (outputs.isNotEmpty) {
+      Logger().i(
+          'frigate history leg: ${outputs.length} confirmed receipt(s) written to owned_outputs (R3/B3.4)');
+      onChanged?.call();
+      onConfirmed?.call();
+    }
+    // R14: the confirmed leg reached blkheight — advance the SHARED lastscan
+    // checkpoint (monotonic) so a backend switch never re-derives a stale
+    // checkpoint and rescans. Confirmed events fire only on discovery; quiet
+    // blocks advance via the Tip->CaughtUp pair in [handleEvent].
+    await _walletRepository.advanceLastSync(blkheight);
   }
 
   Future<void> _recordCandidates(

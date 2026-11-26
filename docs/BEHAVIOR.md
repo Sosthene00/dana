@@ -1,6 +1,10 @@
 # Dana Wallet — Frigate Backend Behavior Specification
 
-**Status: v1.3 (2026-11-25) — OWNER RULING R13: B3.6 default electrum endpoint amended — the
+**Status: v1.4 (2026-11-26) — OWNER RULING R14: ONE shared sync checkpoint. Verbatim ruling:
+"we should assume that whatever height is synced with one is ok with the other." B1.4/B1.5
+amended, B1.6 added: the frigate path ADVANCES the shared `lastscan` checkpoint monotonically
+(Confirmed blkheights; CaughtUp → last seen Tip) — a backend switch never rewinds it.
+Earlier status: v1.3 (2026-11-25) — OWNER RULING R13: B3.6 default electrum endpoint amended — the
 frigate backend URL itself (an electrum endpoint; B5.1 probe proves the protocol on the same
 host:port), `frigateelectrumurl` overrides, dedicated endpoint UI deferred to R7. Earlier
 status: v1.2 (2026-11-18) — OWNER RULING R11: saving a frigate backend starts the subscription
@@ -67,10 +71,21 @@ branch cut from `dev`.
   observable.
 - **B1.4** Both backends write the same confirmed-state layer (`owned_outputs` +
   `tx_spent_outpoints`); balance semantics are backend-independent. The blindbit checkpoint
-  (`lastscan`) is never written by the frigate path.
+  (`lastscan`) is never written by the frigate path — except as a MONOTONIC advance
+  (R14, B1.6): the frigate path never scans a range, it only pushes the shared checkpoint
+  forward to heights the frigate backend has actually delivered state for.
 - **B1.5** Switching frigate → blindbit: blindbit scans from the wallet's last confirmed
   height. Switching blindbit → frigate: the fresh subscription's `start_height` is the same
-  committed height. No wallet state is rebuilt or lost across switches.
+  committed height. No wallet state is rebuilt or lost across switches. (R14: with B1.6 the
+  "last confirmed height" is the shared checkpoint — a switch after frigate synced to H does
+  NOT rescan the gap blindbit last touched.)
+- **B1.6** (R14) The `lastscan` checkpoint is SHARED and advanced by whichever backend synced:
+  "whatever height is synced with one is ok with the other." The frigate path advances it
+  monotonically — never rewinds an existing value — at two points: (a) every `Confirmed`
+  event, to the event's `blkheight` (discovery leg); (b) on `CaughtUp`, to the last seen
+  `Tip` height (quiet blocks: the spdk frigate scanner emits `Confirmed` only on discovery,
+  so Tip→CaughtUp is the only quiet-chain source of the synced-through height). Mempool
+  (`Unconfirmed`) events never touch the checkpoint.
 
 ## 2. Frigate subscription lifecycle — foreground service
 
@@ -346,7 +361,9 @@ existence by the audit pass.
 | B1.1 | `test/services/sync_engine_backend_gate_test.dart::blindbit committed (positive control): the heartbeat scans` (blindbit wake-cycle scan shape unchanged) + `test/services/sync_engine_backend_gate_test.dart::nothing configured: the default resolves to blindbit and the heartbeat walks the blindbit wake-cycle scan` (backend-default selection leg: fresh state with no committed backend selects and commits blindbit) + `test/services/sync_engine_backend_gate_test.dart::frigate URL configured, backend never committed: the default resolves to the frigate backend (R13: the frigate URL is the electrum-compatible backend)` (default derivation keeps a configured frigate URL active) |
 | B1.2 | `test/services/sync_engine_backend_gate_test.dart::frigate committed: one heartbeat does no blindbit work` |
 | B1.3 | `test/services/sync_task_handler_wake_test.dart::wake while idle and lastscan stale: the trigger runs a fresh scan cycle` (fresh-work branch: the wake runs a scan cycle and ships the lifecycle to the main isolate) + `test/services/sync_task_handler_wake_test.dart::wake on an already-current tip: the cycle no-ops, no rescan` (no-op branch) + `test/services/sync_task_handler_wake_test.dart::wake while a sync is in flight: progress state re-sent, no rescan` + `test/services/sync_task_handler_wake_test.dart::frigate backend committed: a wake does no blindbit work (B1.2/B1.3)` |
-| B1.4 | PARTIAL — `test/services/sync_engine_backend_gate_test.dart::frigate committed: one heartbeat does no blindbit work` (no sync-state DB write on the frigate path, so the blindbit checkpoint is never written by it) + `test/repositories/frigate_candidates_test.dart::candidate rows never appear in owned_outputs` |
+| B1.4 | PARTIAL — `test/services/sync_engine_backend_gate_test.dart::frigate committed: one heartbeat does no blindbit work` (no scan-range/DB write on the frigate heartbeat path; R14 amended: the frigate path's ONLY checkpoint write is the monotonic advance, covered by B1.6) + `test/repositories/frigate_candidates_test.dart::candidate rows never appear in owned_outputs` |
+| B1.5 | `test/services/sync_engine_backend_gate_test.dart::blindbit committed (positive control): the heartbeat scans` (frigate -> blindbit switch-back: the blindbit engine resumes untouched) + `test/services/sync_engine_backend_gate_test.dart::a committed blindbit wallet flips to frigate: no blindbit work after the flip and the fresh subscription starts from the same committed height` (blindbit -> frigate start_height leg: start_height = the committed height, no blindbit work after the flip, no wallet state rebuilt). R14: the height both legs share is the B1.6 checkpoint |
+| B1.6 | `test/services/frigate_event_handler_test.dart::FrigateEventHandler — shared sync checkpoint (R14) R14: a Confirmed event advances the shared lastscan checkpoint to its blkheight` (discovery leg) + `...R14: the checkpoint never rewinds (a lower height is ignored)` (monotonic guard; mutation-checked: a plain-set advanceLastSync makes it red) + `...R14: CaughtUp advances the checkpoint to the last seen Tip height` (quiet-block leg) + `...R14: CaughtUp without a Tip never moves the checkpoint` + `...R14: Unconfirmed (mempool) events never touch the checkpoint` |
 | B1.5 | `test/services/sync_engine_backend_gate_test.dart::blindbit committed (positive control): the heartbeat scans` (frigate -> blindbit switch-back: the blindbit engine resumes untouched) + `test/services/sync_engine_backend_gate_test.dart::a committed blindbit wallet flips to frigate: no blindbit work after the flip and the fresh subscription starts from the same committed height` (blindbit -> frigate start_height leg: start_height = the committed height, no blindbit work after the flip, no wallet state rebuilt) |
 | B2.1 | PARTIAL — start legs covered at the service-lifecycle seam (started/attached counters on the injected `ForegroundServiceAdapter`, not log text): `test/services/foreground_service_lifecycle_test.dart::wallet start starts the foreground service exactly once` + `test/services/foreground_service_lifecycle_test.dart::re-entry/navigation: a second wallet start while running never re-starts` + `test/services/foreground_service_lifecycle_test.dart::service already live (isolate restart, service survives): the fresh wallet start re-attaches, never re-starts` + `test/services/foreground_service_lifecycle_test.dart::service layer: startForeground onto a live service re-attaches without a second start request`; the survives-main-app-death leg is device-level and rides the B8.3 acceptance run |
 | B2.2 | `test/services/frigate_event_handler_test.dart::R3: a Confirmed history event writes the receipt into owned_outputs` + `test/services/frigate_event_handler_test.dart::B3.1: an Unconfirmed event creates pending candidate rows` + `test/services/sync_service_refresh_contract_test.dart::graduation message (bgKeyRefresh: full) triggers a full DB re-read` (the app READS, does not rescan) |

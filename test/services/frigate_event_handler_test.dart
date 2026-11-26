@@ -9,6 +9,9 @@ import 'package:danawallet/generated/rust/lib.dart';
 import 'package:danawallet/repositories/frigate_candidates_repository.dart';
 import 'package:danawallet/repositories/owned_outputs_repository.dart';
 import 'package:danawallet/repositories/transactions_repository.dart';
+import 'package:danawallet/repositories/wallet_repository.dart';
+import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
+import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
 import 'package:danawallet/services/frigate_event_handler.dart';
 import 'package:danawallet/repositories/database_helper.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -56,6 +59,11 @@ FrigateEventDto unconfirmedEvent({
 }
 
 void main() {
+  // WalletRepository.instance (SharedPreferencesAsync) initializes at first
+  // access — before any group setUp — so the platform mock must be in place
+  // before main() declares the groups.
+  SharedPreferencesAsyncPlatform.instance =
+      InMemorySharedPreferencesAsync.empty();
   group('FrigateEventHandler', () {
     late Database db;
     final repo = FrigateCandidatesRepository.instance;
@@ -230,6 +238,84 @@ void main() {
       final owned = await db.query('owned_outputs');
       expect(owned, hasLength(1));
       expect(confirmedCount, 1);
+    });
+  });
+
+  // Owner ruling R14 (2026-11-26): "we should assume that whatever height is
+  // synced with one [backend] is ok with the other." The frigate path must
+  // advance the SHARED lastscan checkpoint monotonically — switching
+  // frigate -> blindbit must never re-derive a stale checkpoint and rescan.
+  group('FrigateEventHandler — shared sync checkpoint (R14)', () {
+    late Database db;
+    final walletRepo = WalletRepository.instance;
+    late FrigateEventHandler handler;
+
+    setUp(() async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      await db.execute('PRAGMA foreign_keys = ON');
+      await applyMigrations(db);
+      FrigateCandidatesRepository.testDatabaseOverride = () async => db;
+      OwnedOutputsRepository.testDatabaseOverride = () async => db;
+      TransactionsRepository.testDatabaseOverride = () async => db;
+      handler = FrigateEventHandler(
+        candidatesRepository: FrigateCandidatesRepository.instance,
+        nowMillis: () => 1700000000000,
+      );
+    });
+
+    tearDown(() async {
+      FrigateCandidatesRepository.testDatabaseOverride = null;
+      OwnedOutputsRepository.testDatabaseOverride = null;
+      TransactionsRepository.testDatabaseOverride = null;
+      await db.close();
+    });
+
+    test(
+        'R14: a Confirmed event advances the shared lastscan checkpoint to its blkheight',
+        () async {
+      await walletRepo.saveLastSync(10909);
+      await handler.handleEvent(FrigateEventDto.confirmed(
+          blkheight: 14644,
+          blkhash: 'ab',
+          foundOutputs: [ownedOutput(txid: _txidA, vout: 0, amountSat: 1500)]));
+      expect(await walletRepo.readLastSync(), 14644);
+    });
+
+    test('R14: the checkpoint never rewinds (a lower height is ignored)',
+        () async {
+      await walletRepo.saveLastSync(15000);
+      await handler.handleEvent(FrigateEventDto.confirmed(
+          blkheight: 14644,
+          blkhash: 'ab',
+          foundOutputs: [ownedOutput(txid: _txidA, vout: 0, amountSat: 1500)]));
+      expect(await walletRepo.readLastSync(), 15000);
+    });
+
+    test('R14: CaughtUp advances the checkpoint to the last seen Tip height',
+        () async {
+      await walletRepo.saveLastSync(10909);
+      await handler
+          .handleEvent(const FrigateEventDto.tip(height: 14644, hash: 'cd'));
+      // the scanner emits Confirmed only on discovery: a quiet chain delivers
+      // no Confirmed events, so the Tip->CaughtUp pair is the only source of
+      // the synced-through height on quiet blocks
+      await handler.handleEvent(const FrigateEventDto.caughtUp());
+      expect(await walletRepo.readLastSync(), 14644);
+    });
+
+    test('R14: CaughtUp without a Tip never moves the checkpoint', () async {
+      await walletRepo.saveLastSync(15000);
+      await handler.handleEvent(const FrigateEventDto.caughtUp());
+      expect(await walletRepo.readLastSync(), 15000);
+    });
+
+    test('R14: Unconfirmed (mempool) events never touch the checkpoint',
+        () async {
+      await walletRepo.saveLastSync(15000);
+      await handler.handleEvent(unconfirmedEvent(txid: _txidA, outputs: [
+        ownedOutput(txid: _txidA, vout: 0, amountSat: 1500),
+      ]));
+      expect(await walletRepo.readLastSync(), 15000);
     });
   });
 }
