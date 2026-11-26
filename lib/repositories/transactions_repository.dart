@@ -245,10 +245,14 @@ class TransactionsRepository {
   }
 
   /// Add an incoming transaction.
+  ///
+  /// [confirmationBlockhash] is nullable: the frigate confirmation monitor
+  /// graduates from the electrum history leg, which carries the
+  /// confirmation height but no blockhash (the column is nullable).
   Future<void> addIncomingTransaction({
     required String txid,
     required int confirmationHeight,
-    required String confirmationBlockhash,
+    required String? confirmationBlockhash,
   }) async {
     final db = await _db;
     await db.rawInsert('''

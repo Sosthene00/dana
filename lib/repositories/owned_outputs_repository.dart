@@ -106,7 +106,14 @@ class OwnedOutputsRepository {
   }
 
   /// Insert a new output (during scanning).
-  Future<void> insertOutput({
+  /// Inserts an owned output (INSERT OR FAIL on the outpoint — the B3.4
+  /// dedupe: a re-delivered output inserts nothing a second time). Returns
+  /// true when the row was inserted; false on ANY failure — a duplicate
+  /// outpoint (dedupe, harmless) or a real state-write failure. Callers
+  /// that must not confirm derived state on a failed write check the
+  /// result (the graduation path); a swallowed failure used to confirm the
+  /// candidate anyway and the sats stayed invisible (FK 787 regression).
+  Future<bool> insertOutput({
     required OwnedOutput output,
   }) async {
     final db = await _db;
@@ -116,7 +123,7 @@ class OwnedOutputsRepository {
         label = Uint8List.fromList(output.label!);
       }
 
-      await db.rawInsert('''
+      final rowid = await db.rawInsert('''
         INSERT OR FAIL INTO owned_outputs (
           txid, vout, tweak, amount_sat, script, label
         ) VALUES (?, ?, ?, ?, ?, ?)
@@ -128,9 +135,11 @@ class OwnedOutputsRepository {
         output.script,
         label,
       ]);
+      return rowid > 0;
     } catch (e) {
       Logger().e("Failed to insert output: $e");
       Logger().e("Output: ${output.toString()}");
+      return false;
     }
   }
 

@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:danawallet/repositories/frigate_candidates_repository.dart';
 import 'package:danawallet/repositories/owned_outputs_repository.dart';
+import 'package:danawallet/repositories/transactions_repository.dart';
 import 'package:danawallet/services/electrum_client.dart';
 import 'package:danawallet/services/frigate_confirmation_monitor.dart';
 import 'package:danawallet/repositories/database_helper.dart';
@@ -114,8 +115,15 @@ void main() {
       await SharedPreferencesAsync().clear();
       db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
       await applyMigrations(db);
+      // Mirror production: DatabaseHelper opens the real DB with
+      // `PRAGMA foreign_keys = ON` — the device failure this file guards
+      // is exactly FK 787 on owned_outputs. Without the pragma the test
+      // DB silently accepts parentless output rows and the regression is
+      // invisible.
+      await db.execute('PRAGMA foreign_keys = ON');
       FrigateCandidatesRepository.testDatabaseOverride = () async => db;
       OwnedOutputsRepository.testDatabaseOverride = () async => db;
+      TransactionsRepository.testDatabaseOverride = () async => db;
       server = MockElectrumServer();
       port = await server.start();
       server.handler = (method, params) {
@@ -135,6 +143,7 @@ void main() {
     tearDown(() async {
       FrigateCandidatesRepository.testDatabaseOverride = null;
       OwnedOutputsRepository.testDatabaseOverride = null;
+      TransactionsRepository.testDatabaseOverride = null;
       await server.stop();
       await db.close();
     });
@@ -312,6 +321,215 @@ void main() {
           where: 'txid = ? AND vout = ?', whereArgs: [c.txid, c.vout]);
       expect(ownedAgain, hasLength(1));
       expect(graduations, 1);
+      await monitor.stop();
+    });
+
+    test(
+        'graduation writes the transactions parent row before owned_outputs '
+        '(FK 787 regression: change sats must not vanish)', () async {
+      // owned_outputs REFERENCES transactions(txid) and the real DB runs
+      // with `PRAGMA foreign_keys = ON`: an output inserted without its
+      // parent row fails with FK 787, the failure was swallowed, and the
+      // candidate was confirmed anyway — the sats became permanently
+      // invisible to the balance. Graduation must mirror the sibling
+      // confirmed path (_recordConfirmedReceipts): parent row first.
+      final c = candidate();
+      await FrigateCandidatesRepository.instance.upsertCandidate(c);
+      final sh = electrumScripthash(c.script);
+
+      server.handler = (method, params) {
+        switch (method) {
+          case 'server.version':
+            return ['MockElectrum 1.0', '1.4'];
+          case 'blockchain.scripthash.subscribe':
+            return 'mempool-status';
+          case 'blockchain.scripthash.get_history':
+            return [
+              {'height': 0, 'tx_hash': c.txid},
+            ];
+          default:
+            throw Exception('unexpected method $method');
+        }
+      };
+
+      final monitor = makeMonitor();
+      await monitor.start(endpoint: '127.0.0.1:$port');
+      await waitUntil(
+          'initial subscribe',
+          () async => server.requestMethods
+              .contains('blockchain.scripthash.subscribe'));
+
+      // Mine: the tx is now confirmed at height 869.
+      server.handler = (method, params) {
+        switch (method) {
+          case 'server.version':
+            return ['MockElectrum 1.0', '1.4'];
+          case 'blockchain.scripthash.subscribe':
+            return 'status-after-confirm';
+          case 'blockchain.scripthash.get_history':
+            return [
+              {'height': 869, 'tx_hash': c.txid},
+            ];
+          default:
+            throw Exception('unexpected method $method');
+        }
+      };
+      server.pushNotification(
+          'blockchain.scripthash.subscribe', [sh, 'status-after-confirm']);
+
+      await waitUntil(
+          'candidate confirmed',
+          () async => (await FrigateCandidatesRepository.instance
+                  .getCandidate(c.txid, c.vout))
+              ?.status ==
+          FrigateCandidateStatus.confirmed);
+
+      // The FK parent row exists, with the height the electrum history
+      // carried (blockhash is unknown on the electrum leg — nullable).
+      final parent = await db.query('transactions',
+          where: 'txid = ?', whereArgs: [c.txid]);
+      expect(parent, hasLength(1),
+          reason: 'graduation must create the transactions parent row');
+      expect(parent.first['confirmation_height'], 869);
+      expect(parent.first['confirmation_blockhash'], isNull);
+
+      // The output itself is present — the sats are in the balance.
+      final owned = await db.query('owned_outputs',
+          where: 'txid = ? AND vout = ?', whereArgs: [c.txid, c.vout]);
+      expect(owned, hasLength(1));
+      expect(owned.first['amount_sat'], c.amountSat);
+      await monitor.stop();
+    });
+
+    test(
+        'a failed owned_outputs insert does NOT confirm the candidate '
+        '(swallow-and-confirm regression)', () async {
+      // insertOutput used to swallow every failure; graduation then marked
+      // the candidate confirmed regardless — a hard state-write failure
+      // became a silent graduation. With the insert failing and the
+      // outpoint ABSENT, the candidate must stay pending (retry on the
+      // next reconcile), never confirmed.
+      final c = candidate(script: [0x51, 0x20, 0xb1]);
+      await FrigateCandidatesRepository.instance.upsertCandidate(c);
+      final sh = electrumScripthash(c.script);
+
+      server.handler = (method, params) {
+        switch (method) {
+          case 'server.version':
+            return ['MockElectrum 1.0', '1.4'];
+          case 'blockchain.scripthash.subscribe':
+            return 'mempool-status';
+          case 'blockchain.scripthash.get_history':
+            return [
+              {'height': 0, 'tx_hash': c.txid},
+            ];
+          default:
+            throw Exception('unexpected method $method');
+        }
+      };
+
+      final monitor = makeMonitor();
+      await monitor.start(endpoint: '127.0.0.1:$port');
+      await waitUntil(
+          'initial subscribe',
+          () async => server.requestMethods
+              .contains('blockchain.scripthash.subscribe'));
+
+      // Force the owned_outputs insert to fail at the DB layer for THIS
+      // txid only (RAISE(ABORT) — a genuine state-write failure, not a
+      // B3.4 dedupe): the parent row is written, then the insert aborts.
+      // The trigger is in place BEFORE the tx is mined so no graduation
+      // attempt can slip past it.
+      await db.execute('''
+        CREATE TRIGGER fail_owned_output_insert
+        BEFORE INSERT ON owned_outputs
+        WHEN NEW.txid = '${c.txid}'
+        BEGIN
+          SELECT RAISE(ABORT, 'forced test failure');
+        END;
+      ''');
+
+      // Mine: the tx is now confirmed; the graduation insert will abort.
+      server.handler = (method, params) {
+        switch (method) {
+          case 'server.version':
+            return ['MockElectrum 1.0', '1.4'];
+          case 'blockchain.scripthash.subscribe':
+            return 'status-after-confirm';
+          case 'blockchain.scripthash.get_history':
+            return [
+              {'height': 869, 'tx_hash': c.txid},
+            ];
+          default:
+            throw Exception('unexpected method $method');
+        }
+      };
+      server.pushNotification(
+          'blockchain.scripthash.subscribe', [sh, 'status-after-confirm']);
+
+      // Give the graduation attempt time to run and fail.
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+
+      final row = await FrigateCandidatesRepository.instance
+          .getCandidate(c.txid, c.vout);
+      expect(row?.status, FrigateCandidateStatus.pending,
+          reason: 'a failed state write must not confirm the candidate');
+      final owned = await db.query('owned_outputs',
+          where: 'txid = ? AND vout = ?', whereArgs: [c.txid, c.vout]);
+      expect(owned, isEmpty);
+      expect(await FrigateCandidatesRepository.instance.getPendingBalance(),
+          c.amountSat);
+      await monitor.stop();
+    });
+
+    test(
+        'a re-delivered graduation dedupes on the outpoint and still '
+        'confirms (B3.4)', () async {
+      // The scanner's Confirmed leg may have written the output first: the
+      // INSERT OR FAIL then fails on the duplicate outpoint — a dedupe,
+      // not a failure. The candidate must still be marked confirmed.
+      final c = candidate(script: [0x51, 0x20, 0xb2]);
+      await FrigateCandidatesRepository.instance.upsertCandidate(c);
+      // The scanner's Confirmed leg writes the parent row first
+      // (_recordConfirmedReceipts order) — mirror it exactly.
+      await db
+          .insert('transactions', {'txid': c.txid, 'confirmation_height': 869});
+      await db.insert('owned_outputs', {
+        'txid': c.txid,
+        'vout': c.vout,
+        'tweak': Uint8List.fromList(List.filled(32, 7)),
+        'amount_sat': c.amountSat,
+        'script': Uint8List.fromList(c.script),
+      });
+
+      server.handler = (method, params) {
+        switch (method) {
+          case 'server.version':
+            return ['MockElectrum 1.0', '1.4'];
+          case 'blockchain.scripthash.subscribe':
+            return 'status-after-confirm';
+          case 'blockchain.scripthash.get_history':
+            return [
+              {'height': 869, 'tx_hash': c.txid},
+            ];
+          default:
+            throw Exception('unexpected method $method');
+        }
+      };
+
+      final monitor = makeMonitor();
+      await monitor.start(endpoint: '127.0.0.1:$port');
+      await waitUntil(
+          'candidate confirmed',
+          () async => (await FrigateCandidatesRepository.instance
+                  .getCandidate(c.txid, c.vout))
+              ?.status ==
+          FrigateCandidateStatus.confirmed);
+
+      // Exactly one row — the dedupe created no second state.
+      final owned = await db.query('owned_outputs',
+          where: 'txid = ? AND vout = ?', whereArgs: [c.txid, c.vout]);
+      expect(owned, hasLength(1));
       await monitor.stop();
     });
 

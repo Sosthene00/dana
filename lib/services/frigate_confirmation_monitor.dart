@@ -8,6 +8,7 @@ import 'package:danawallet/generated/rust/lib.dart';
 import 'package:danawallet/repositories/frigate_candidates_repository.dart';
 import 'package:danawallet/repositories/owned_outputs_repository.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
+import 'package:danawallet/repositories/transactions_repository.dart';
 import 'package:danawallet/services/electrum_client.dart';
 import 'package:danawallet/services/writer_lease.dart';
 import 'package:flutter/foundation.dart';
@@ -65,6 +66,7 @@ class FrigateConfirmationMonitor {
 
   final FrigateCandidatesRepository _candidatesRepository;
   final OwnedOutputsRepository _ownedOutputsRepository;
+  final TransactionsRepository _transactionsRepository;
 
   /// test seam (and rig wiring): builds the electrum client for an endpoint.
   final Future<ElectrumClient> Function(String endpoint)? clientFactory;
@@ -110,6 +112,7 @@ class FrigateConfirmationMonitor {
   FrigateConfirmationMonitor({
     FrigateCandidatesRepository? candidatesRepository,
     OwnedOutputsRepository? ownedOutputsRepository,
+    TransactionsRepository? transactionsRepository,
     this.clientFactory,
     this.onChanged,
     this.onGraduated,
@@ -120,7 +123,9 @@ class FrigateConfirmationMonitor {
   })  : _candidatesRepository =
             candidatesRepository ?? FrigateCandidatesRepository.instance,
         _ownedOutputsRepository =
-            ownedOutputsRepository ?? OwnedOutputsRepository.instance;
+            ownedOutputsRepository ?? OwnedOutputsRepository.instance,
+        _transactionsRepository =
+            transactionsRepository ?? TransactionsRepository.instance;
 
   /// Start the monitor against the configured electrum endpoint (B3.6):
   /// the wallet's configured electrum-compatible API URL (settings key
@@ -364,7 +369,11 @@ class FrigateConfirmationMonitor {
         .getHistory(electrumScripthash(Uint8List.fromList(row.script)));
     switch (classifyHistory(history, row.txid)) {
       case CandidateObservation.confirmed:
-        await _graduate(row);
+        // The confirmed history entry carries the confirmation height —
+        // the graduation needs it for the transactions parent row.
+        final height =
+            history.firstWhere((entry) => entry.txHash == row.txid).height;
+        await _graduate(row, confirmationHeight: height);
       case CandidateObservation.pending:
         break; // still in the mempool — keep watching
       case CandidateObservation.evicted:
@@ -377,10 +386,29 @@ class FrigateConfirmationMonitor {
   /// a re-delivered graduation or the scanner's later Confirmed re-report
   /// dedupes on the outpoint, B3.4), and the candidate row is marked
   /// `confirmed`. Electrum confirmation alone is the graduation condition.
-  Future<void> _graduate(FrigateCandidate candidate) async {
+  ///
+  /// FK ORDER (787 regression): `owned_outputs` REFERENCES
+  /// `transactions(txid)` (migration 001) and the real DB runs with
+  /// `PRAGMA foreign_keys = ON` — the parent row MUST be written first,
+  /// exactly as the sibling confirmed path
+  /// [FrigateEventHandler._recordConfirmedReceipts] does
+  /// (addIncomingTransaction -> insertOutput). The electrum history carries
+  /// the confirmation height; the blockhash is unknown on this leg (the
+  /// column is nullable). A FAILED output insert (and the outpoint still
+  /// absent — not a B3.4 dedupe) must NOT confirm the candidate: the row
+  /// stays pending so the next reconcile retries the write.
+  Future<void> _graduate(
+    FrigateCandidate candidate, {
+    required int confirmationHeight,
+  }) async {
     // B2.8: the lease check sits inside the sync-state write path.
     await writerLease?.ensureOwnership();
-    await _ownedOutputsRepository.insertOutput(
+    await _transactionsRepository.addIncomingTransaction(
+      txid: candidate.txid,
+      confirmationHeight: confirmationHeight,
+      confirmationBlockhash: null,
+    );
+    final inserted = await _ownedOutputsRepository.insertOutput(
       output: OwnedOutput(
         outpoint: OutPoint(txid: candidate.txid, vout: candidate.vout),
         tweak: U8Array32(candidate.tweak),
@@ -388,6 +416,19 @@ class FrigateConfirmationMonitor {
         script: Uint8List.fromList(candidate.script),
       ),
     );
+    if (!inserted) {
+      // INSERT OR FAIL dedupe (B3.4): an outpoint that is already present
+      // (the scanner's Confirmed leg won the race) is not a failure. A
+      // genuinely failed state write must not confirm the candidate.
+      final existing = await _ownedOutputsRepository.getOutputAmount(
+          OutPoint(txid: candidate.txid, vout: candidate.vout));
+      if (existing == null) {
+        Logger().e('frigate graduation: owned_outputs insert failed for '
+            '${candidate.txid}x${candidate.vout} — candidate left pending '
+            'for retry');
+        return;
+      }
+    }
     await _candidatesRepository.markConfirmed(candidate.txid, candidate.vout);
     final scripthash = electrumScripthash(Uint8List.fromList(candidate.script));
     await _client?.unsubscribeScripthash(scripthash);
