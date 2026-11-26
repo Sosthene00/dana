@@ -39,9 +39,11 @@ class SyncService {
       _callbacksRegistered = true;
     }
 
-    await ForegroundSyncService.start();
+    // B2.1: the outcome carries the lifecycle decision — a live service
+    // was re-attached by ForegroundSyncService.start(), never re-started.
+    final serviceStart = await ForegroundSyncService.start();
 
-    if (await FlutterForegroundTask.isRunningService) {
+    if (serviceStart != ForegroundServiceStart.failed) {
       _chainState.startChainPoller(
         true,
         onTipUpdated: () async =>

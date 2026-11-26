@@ -6,6 +6,7 @@ import 'package:danawallet/states/chain_state.dart';
 import 'package:danawallet/states/permission_state.dart';
 import 'package:danawallet/states/sync_progress_state.dart';
 import 'package:danawallet/states/wallet_state.dart';
+import 'package:flutter/foundation.dart';
 import 'package:logger/logger.dart';
 
 class SyncOrchestrator {
@@ -14,6 +15,12 @@ class SyncOrchestrator {
 
   bool _running = false;
   bool _permissionRestartInFlight = false;
+
+  /// Test seam: forces the Android foreground-service path off-device so
+  /// unit tests can drive the wallet-start service lifecycle (B2.1) on the
+  /// host. Never set outside tests.
+  @visibleForTesting
+  static bool debugIsAndroidOverride = false;
 
   bool get isRunning => _running;
 
@@ -35,7 +42,7 @@ class SyncOrchestrator {
   Future<void> start({bool forceInProcess = false}) async {
     if (_running) return;
 
-    bool tryForegroundTask = Platform.isAndroid &&
+    bool tryForegroundTask = (debugIsAndroidOverride || Platform.isAndroid) &&
         _permissionState.notificationGranted &&
         !forceInProcess;
 
