@@ -130,9 +130,17 @@ class FrigateConfirmationMonitor {
   /// hardening deferred to R7): the frigate endpoint IS an electrum
   /// endpoint, the B5.1 probe handshakes `server.version` against the same
   /// host:port, so the frigate URL is reused until a dedicated endpoint
-  /// key/UI exists. With neither configured the monitor does not start
-  /// (logged) — candidates stay pending until one is; declaring the
-  /// endpoint UI is R7 (same pattern as the frigate URL key).
+  /// key/UI exists.
+  ///
+  /// B8.2 HARD GATE: the monitor never runs without the electrum path. If
+  /// neither the override nor a frigate URL resolves, [start] THROWS — a
+  /// hard failure at the API boundary, not a logged skip — so no code path
+  /// can reach a running monitor with a missing electrum path (the old
+  /// breach: receipts found only after restart). The B3.6 soft leg ("with
+  /// neither configured the monitor does not start, candidates stay
+  /// pending") lives at the wiring level: FrigateSubscriptionController
+  /// does not start the monitor without a configured frigate URL.
+  /// Declaring the endpoint UI is R7 (same pattern as the frigate URL key).
   Future<void> start({String? endpoint}) async {
     _stopped = false;
     _endpoint =
@@ -147,10 +155,11 @@ class FrigateConfirmationMonitor {
       }
     }
     if (_endpoint == null || _endpoint!.isEmpty) {
-      Logger()
-          .i('frigate confirmation tracking: no electrum endpoint configured, '
-              'phase 3 not started');
-      return;
+      // B8.2 hard gate: refuse to run phase 3 without the electrum path.
+      throw StateError(
+          'B8.2 hard gate: frigate confirmation monitor started without a '
+          'resolved electrum endpoint (frigateelectrumurl or frigateurl); '
+          'the confirmation monitor never ships without the electrum path');
     }
     await _connectAndSubscribe();
   }

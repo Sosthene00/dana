@@ -446,12 +446,17 @@ void main() {
       await monitor.stop();
     });
 
-    test('no electrum endpoint configured: phase 3 does not start (B3.6)',
+    test(
+        'no electrum endpoint configured: start() throws, phase 3 does '
+        'not run (B3.6 soft leg at the wiring, B8.2 hard gate at the API)',
         () async {
       // Neither `frigateelectrumurl` nor `frigateurl` is set (prefs are
-      // cleared in setUp): the monitor must not start at all — no client
-      // built, no connection, no subscription — the condition is logged,
-      // and candidates stay pending until an endpoint is configured.
+      // cleared in setUp): the B3.6 soft leg lives at the WIRING level —
+      // FrigateSubscriptionController does not start the monitor without a
+      // frigate URL — and at the monitor API boundary the attempt is the
+      // B8.2 HARD gate: a thrown error, not a logged skip. No client is
+      // built, no connection is opened, and candidates stay pending until
+      // an endpoint is configured.
       final c = candidate(script: [0x51, 0x20, 0x77]);
       await FrigateCandidatesRepository.instance.upsertCandidate(c);
 
@@ -464,8 +469,7 @@ void main() {
         },
         reconnectDelay: const Duration(milliseconds: 20),
       );
-      await monitor.start();
-      await Future<void>.delayed(const Duration(milliseconds: 150));
+      await expectLater(monitor.start(), throwsStateError);
 
       expect(factoryCalls, 0,
           reason: 'monitor must not build any electrum client when no '
@@ -478,7 +482,6 @@ void main() {
           reason: 'candidates stay pending without an endpoint');
       expect(await FrigateCandidatesRepository.instance.getPendingBalance(),
           c.amountSat);
-      await monitor.stop();
     });
 
     test(
@@ -719,6 +722,95 @@ void main() {
           .getCandidate(fresh.txid, 0);
       expect(freshRow?.status, FrigateCandidateStatus.pending);
       await monitor.stop();
+    });
+
+    group('B8.2 hard gate', () {
+      test(
+          'start() without any resolvable electrum endpoint throws — '
+          'the monitor never runs without the electrum path (B8.2)', () async {
+        // Neither `frigateelectrumurl` nor `frigateurl` is set (prefs are
+        // cleared in setUp): starting the monitor is a HARD failure at the
+        // API boundary — a thrown error, not a logged skip. Deliberately
+        // stronger than the B3.6 soft leg (the wiring level does not even
+        // start the monitor without a frigate URL): the gate exists so no
+        // code path can reach a RUNNING monitor with a missing electrum
+        // path (the old breach: receipts found only after restart).
+        final c = candidate(script: [0x51, 0x20, 0x90]);
+        await FrigateCandidatesRepository.instance.upsertCandidate(c);
+
+        var factoryCalls = 0;
+        final monitor = FrigateConfirmationMonitor(
+          clientFactory: (endpoint) async {
+            factoryCalls++;
+            return ElectrumClient.connect(endpoint,
+                timeout: const Duration(seconds: 5));
+          },
+          reconnectDelay: const Duration(milliseconds: 20),
+        );
+
+        await expectLater(monitor.start(), throwsStateError);
+
+        // The gate fires BEFORE any electrum work: no client built, no
+        // connection opened, candidates untouched.
+        expect(factoryCalls, 0,
+            reason: 'the hard gate must fire before any client is built');
+        expect(server.requestMethods, isEmpty,
+            reason: 'no electrum connection may be opened');
+        final row = await FrigateCandidatesRepository.instance
+            .getCandidate(c.txid, c.vout);
+        expect(row?.status, FrigateCandidateStatus.pending,
+            reason: 'candidates stay pending without an endpoint');
+        expect(await FrigateCandidatesRepository.instance.getPendingBalance(),
+            c.amountSat);
+      });
+
+      test(
+          'an explicit empty endpoint throws too — the gate is not '
+          'bypassable via start(endpoint: ...)', () async {
+        // Mutation check: an empty-string endpoint must not sneak past the
+        // resolution chain (it is not a resolvable electrum path).
+        var factoryCalls = 0;
+        final monitor = FrigateConfirmationMonitor(
+          clientFactory: (endpoint) async {
+            factoryCalls++;
+            return ElectrumClient.connect(endpoint,
+                timeout: const Duration(seconds: 5));
+          },
+          reconnectDelay: const Duration(milliseconds: 20),
+        );
+
+        await expectLater(monitor.start(endpoint: ''), throwsStateError);
+        expect(factoryCalls, 0);
+        expect(server.requestMethods, isEmpty);
+      });
+
+      test(
+          'after the throw the monitor is inert — registerCandidates '
+          'never reaches a running monitor (B8.2)', () async {
+        // The failed start must leave no live monitor behind: late
+        // candidate registration (B3.7) cannot conjure an electrum path.
+        final c = candidate(script: [0x51, 0x20, 0x91]);
+        await FrigateCandidatesRepository.instance.upsertCandidate(c);
+
+        var factoryCalls = 0;
+        final monitor = FrigateConfirmationMonitor(
+          clientFactory: (endpoint) async {
+            factoryCalls++;
+            return ElectrumClient.connect(endpoint,
+                timeout: const Duration(seconds: 5));
+          },
+          reconnectDelay: const Duration(milliseconds: 20),
+        );
+
+        await expectLater(monitor.start(), throwsStateError);
+        await monitor.registerCandidates();
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        expect(factoryCalls, 0,
+            reason: 'a gated monitor must never build a client');
+        expect(server.requestMethods, isEmpty);
+        expect(await FrigateCandidatesRepository.instance.getPendingBalance(),
+            c.amountSat);
+      });
     });
   });
 }

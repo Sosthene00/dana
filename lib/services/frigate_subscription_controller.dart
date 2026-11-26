@@ -181,8 +181,11 @@ class FrigateSubscriptionController {
           'frigate subscription started from checkpoint height $startHeight (B1.2)');
 
       // Phase 3 (B8.2 hard gate): the electrum confirmation path runs
-      // whenever the frigate path runs. No-op unless an electrum endpoint is
-      // configured.
+      // whenever the frigate path runs. The frigate URL was required above,
+      // so the monitor's endpoint resolution cannot come up empty here —
+      // and if it ever did, monitor.start() THROWS (B8.2 hard gate: never
+      // run without the electrum path) and the failed-start cleanup below
+      // tears the subscription back down.
       await _monitor.start();
       return true;
     } catch (e) {
