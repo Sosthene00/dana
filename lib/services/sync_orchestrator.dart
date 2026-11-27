@@ -55,11 +55,20 @@ class SyncOrchestrator {
         Logger().i("Successfully started foreground sync service");
       } else {
         Logger().w("Starting in-process service as a fallback");
-        await _service.startInProcess();
+        // The service start itself failed: the service is known
+        // unavailable, so the app host skips the 15 s claim window (M-b).
+        await _service.startInProcess(serviceKnownUnavailable: true);
       }
     } else {
-      // for non-android platforms, we always start the sync service in-process
-      await _service.startInProcess();
+      // for non-android platforms, we always start the sync service
+      // in-process. On Android, a denied notification permission means the
+      // service was never started — known unavailable, no claim window to
+      // race (M-b).
+      final serviceKnownUnavailable =
+          (debugIsAndroidOverride || Platform.isAndroid) &&
+              !_permissionState.notificationGranted;
+      await _service.startInProcess(
+          serviceKnownUnavailable: serviceKnownUnavailable);
       Logger().i("Successfully started in-process sync service");
     }
     _running = true;

@@ -159,13 +159,35 @@ Future<bool> waitForServiceWriterClaim({
   final deadline = tick() + timeout.inMilliseconds;
 
   while (tick() < deadline) {
-    final row = await repo.read();
-    if (row != null &&
-        row.writerId == WriterLease.serviceWriterId &&
-        tick() - row.heartbeatMs < WriterLease.staleAfter.inMilliseconds) {
-      return true;
-    }
+    if (await _freshServiceWriterClaim(repo, tick)) return true;
     await Future<void>.delayed(pollPeriod);
   }
   return false;
+}
+
+bool _isFreshServiceClaim(WriterLeaseRow? row, int nowMs) =>
+    row != null &&
+    row.writerId == WriterLease.serviceWriterId &&
+    nowMs - row.heartbeatMs < WriterLease.staleAfter.inMilliseconds;
+
+Future<bool> _freshServiceWriterClaim(
+        WriterLeaseRepository repo, int Function() tick) async =>
+    _isFreshServiceClaim(await repo.read(), tick());
+
+/// Single immediate check for a fresh service-writer lease, with NO waiting
+/// (M-b): for app-host startup when the foreground service is KNOWN
+/// unavailable — the service-start result already reported failure, or the
+/// notification permission is denied so no service was ever started. There
+/// is nothing to race then, so instead of awaiting the
+/// [waitForServiceWriterClaim] window the app checks the lease once (a
+/// service that claimed right before dying still wins) and otherwise takes
+/// over immediately. The app-host stand-down probe (B2.3) remains the
+/// safety net if a service appears later.
+Future<bool> serviceWriterClaimIsFresh({
+  int Function()? nowMillis,
+  WriterLeaseRepository? repository,
+}) async {
+  final repo = repository ?? WriterLeaseRepository.instance;
+  int tick() => nowMillis?.call() ?? DateTime.now().millisecondsSinceEpoch;
+  return _freshServiceWriterClaim(repo, tick);
 }

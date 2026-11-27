@@ -323,4 +323,80 @@ void main() {
       );
     });
   });
+
+  group('serviceWriterClaimIsFresh (M-b known-unavailable fast path)', () {
+    late Database db;
+    int clockMs = 1700000000000;
+
+    setUp(() async {
+      db = await openTestDb();
+      WriterLeaseRepository.testDatabaseOverride = () async => db;
+      clockMs = 1700000000000;
+    });
+
+    tearDown(() async {
+      WriterLeaseRepository.testDatabaseOverride = null;
+      await db.close();
+    });
+
+    test('a fresh service lease counts, without any waiting', () async {
+      await WriterLeaseRepository.instance.write(_serviceId, clockMs);
+      expect(
+        await serviceWriterClaimIsFresh(nowMillis: () => clockMs),
+        isTrue,
+      );
+    });
+
+    test('no lease row: false immediately', () async {
+      expect(
+        await serviceWriterClaimIsFresh(nowMillis: () => clockMs),
+        isFalse,
+      );
+    });
+
+    test('a stale service lease does not count', () async {
+      await WriterLeaseRepository.instance
+          .write(_serviceId, clockMs - WriterLease.staleAfter.inMilliseconds);
+      expect(
+        await serviceWriterClaimIsFresh(nowMillis: () => clockMs),
+        isFalse,
+        reason: 'stale = service down; the app may take over (B2.8)',
+      );
+    });
+
+    test('a fresh APP lease does not count', () async {
+      await WriterLeaseRepository.instance.write(_appId, clockMs);
+      expect(
+        await serviceWriterClaimIsFresh(nowMillis: () => clockMs),
+        isFalse,
+      );
+    });
+
+    test('performs exactly ONE lease read (no polling window)', () async {
+      final repo = _CountingLeaseRepo();
+      await serviceWriterClaimIsFresh(
+        nowMillis: () => clockMs,
+        repository: repo,
+      );
+      expect(repo.reads, 1,
+          reason: 'the known-unavailable path checks once, never polls');
+    });
+  });
+}
+
+/// Counts lease reads: pins the M-b single-check (no 15 s polling window).
+class _CountingLeaseRepo implements WriterLeaseRepository {
+  int reads = 0;
+
+  @override
+  Future<WriterLeaseRow?> read() async {
+    reads++;
+    return null;
+  }
+
+  @override
+  Future<void> write(String writerId, int heartbeatMs) async {}
+
+  @override
+  Future<void> clear() async {}
 }

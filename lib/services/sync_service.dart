@@ -90,12 +90,23 @@ class SyncService {
 
   /// In-process host. On Android, a fresh service writer lease means the
   /// service is the host and this isolate starts no scanner.
-  Future<void> startInProcess() async {
+  ///
+  /// [serviceKnownUnavailable] (M-b): true when app-host startup already
+  /// knows the foreground service is unavailable — the service-start result
+  /// reported failure, or the notification permission is denied so no
+  /// service was ever started. There is nothing to race then, so instead of
+  /// awaiting the bounded [waitForServiceWriterClaim] window the gate does
+  /// a single immediate lease check and the committed scanner starts right
+  /// away; the stand-down probe below remains the safety net if a service
+  /// appears later.
+  Future<void> startInProcess({bool serviceKnownUnavailable = false}) async {
     final android = debugIsAndroid ?? Platform.isAndroid;
     if (android) {
       final claimed = debugServiceClaimProbe != null
           ? await debugServiceClaimProbe!()
-          : await waitForServiceWriterClaim();
+          : serviceKnownUnavailable
+              ? await serviceWriterClaimIsFresh()
+              : await waitForServiceWriterClaim();
       if (claimed) {
         Logger().i('sync host: foreground service holds the writer lease — '
             'app starts no scanner');

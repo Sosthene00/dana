@@ -467,4 +467,124 @@ void main() {
       engine.dispose();
     });
   });
+
+  group('known-unavailable service at app-host startup (M-b)', () {
+    late Database db;
+    late Directory tmpDir;
+
+    setUp(() async {
+      await SharedPreferencesAsync().clear();
+      await SharedPreferencesAsync().setString(_keyNetwork, 'regtest');
+
+      tmpDir = await Directory.systemTemp.createTemp('sync-mb-');
+      db = await databaseFactoryFfi.openDatabase('${tmpDir.path}/test.db');
+      await db.execute('PRAGMA foreign_keys = ON');
+      await applyMigrations(db);
+      WriterLeaseRepository.testDatabaseOverride = () async => db;
+    });
+
+    tearDown(() async {
+      WriterLeaseRepository.testDatabaseOverride = null;
+      await db.close();
+      await tmpDir.delete(recursive: true);
+    });
+
+    test('app host starts the scanner without awaiting the 15 s claim window',
+        () async {
+      final built = <ChainBackendKind>[];
+      final service = SyncService(
+        chainState: ChainState(),
+        frigateState: FrigateState(),
+        syncProgress: SyncProgressState.create(),
+        walletState: WalletState.create(),
+        debugIsAndroid: true,
+        // No debugServiceClaimProbe: the REAL single lease check runs
+        // against the (empty) lease DB. The service is KNOWN unavailable at
+        // startup (the service start already failed / notification
+        // permission denied), so nothing will ever claim — there is nothing
+        // to race (M-b).
+        debugBuildScanner: (kind, _) {
+          built.add(kind);
+          return _FakeScanner(kind, []);
+        },
+      );
+
+      // M-b: startup must not await the 15 s service-writer claim window.
+      await service.startInProcess(serviceKnownUnavailable: true).timeout(
+          const Duration(seconds: 5),
+          onTimeout: () =>
+              fail('app-host startup still awaited the service-writer claim '
+                  'window (>5 s) although the service is known unavailable'));
+
+      expect(built, [ChainBackendKind.blindbit],
+          reason: 'the committed scanner starts right away');
+      expect(service.debugAppHostRunning, isTrue);
+    });
+
+    test('a fresh service lease still wins the single immediate check',
+        () async {
+      // A service that claimed right before dying holds a fresh lease: the
+      // known-unavailable fast path must still honor it (single check, not
+      // a race), keeping the app read-only.
+      await WriterLeaseRepository.instance.write(
+          WriterLease.serviceWriterId, DateTime.now().millisecondsSinceEpoch);
+
+      final built = <ChainBackendKind>[];
+      final service = SyncService(
+        chainState: ChainState(),
+        frigateState: FrigateState(),
+        syncProgress: SyncProgressState.create(),
+        walletState: WalletState.create(),
+        debugIsAndroid: true,
+        debugBuildScanner: (kind, _) {
+          built.add(kind);
+          return _FakeScanner(kind, []);
+        },
+      );
+
+      await service.startInProcess(serviceKnownUnavailable: true);
+
+      expect(built, isEmpty,
+          reason: 'a fresh service lease means the service is the host');
+      expect(service.debugAppHostRunning, isFalse);
+    });
+
+    test('normal path: the bounded claim wait still gates scanner start',
+        () async {
+      final probeSw = Stopwatch()..start();
+      final buildSw = Stopwatch()..start();
+      var probeResolved = false;
+      final built = <ChainBackendKind>[];
+      final service = SyncService(
+        chainState: ChainState(),
+        frigateState: FrigateState(),
+        syncProgress: SyncProgressState.create(),
+        walletState: WalletState.create(),
+        debugIsAndroid: true,
+        // Not known unavailable: the service may still claim, so the
+        // bounded wait gates the scanner start (unchanged by M-b).
+        debugServiceClaimProbe: () async {
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+          probeResolved = true;
+          probeSw.stop();
+          return false;
+        },
+        debugBuildScanner: (kind, _) {
+          built.add(kind);
+          buildSw.stop();
+          return _FakeScanner(kind, []);
+        },
+      );
+
+      await service.startInProcess();
+
+      expect(probeResolved, isTrue,
+          reason: 'the claim gate still runs on the normal path');
+      expect(buildSw.elapsedMilliseconds >= probeSw.elapsedMilliseconds - 5,
+          isTrue,
+          reason: 'the scanner starts only after the claim wait resolves');
+      expect(built, [ChainBackendKind.blindbit]);
+      expect(service.debugAppHostRunning, isTrue);
+    });
+  });
 }
