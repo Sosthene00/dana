@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:danawallet/repositories/frigate_disclosure_repository.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
 import 'package:danawallet/screens/settings/chainbackend/chain_backend_screen.dart';
+import 'package:danawallet/services/backend_apply_result.dart';
 import 'package:danawallet/services/frigate_url_probe.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -25,19 +26,23 @@ import 'package:shared_preferences_platform_interface/shared_preferences_async_p
 // the public path.
 
 /// Records the single applyBackend command the screen sends after a
-/// committed save. [future] can hang or throw so the screen's timeout and
-/// error path stay covered.
+/// committed save. [future] can hang or [error] throw so the screen's
+/// timeout and error path stay covered; [result] simulates the typed
+/// not-delivered outcomes (M-c).
 class _ApplyProbe {
-  _ApplyProbe({this.future, this.error});
+  _ApplyProbe(
+      {this.future, this.error, this.result = BackendApplyResult.delivered});
 
   final Future<void>? future;
   final Object? error;
+  final BackendApplyResult result;
   int calls = 0;
 
-  Future<void> call() async {
+  Future<BackendApplyResult> call() async {
     calls++;
     if (error != null) throw error!;
     if (future != null) await future;
+    return result;
   }
 }
 
@@ -80,8 +85,10 @@ void main() {
   }
 
   Future<void> declarePublicAndSave(WidgetTester tester,
-      {required Future<void> Function(String url) probe}) async {
-    await tester.pumpWidget(wrap(ChainBackendScreen(probe: probe)));
+      {required Future<void> Function(String url) probe,
+      Future<BackendApplyResult> Function()? apply}) async {
+    await tester
+        .pumpWidget(wrap(ChainBackendScreen(probe: probe, applyBackend: apply)));
     await tester.pumpAndSettle();
 
     await tester.tap(find.text('Frigate'));
@@ -131,7 +138,9 @@ void main() {
     final settings = SettingsRepository.instance;
     final disclosure = FrigateDisclosureRepository.instance;
 
-    await declarePublicAndSave(tester, probe: (url) async {});
+    await declarePublicAndSave(tester,
+        probe: (url) async {},
+        apply: () async => BackendApplyResult.delivered);
 
     expect(find.text('Sync through a public backend?'), findsOneWidget);
     await tester.tap(find.text('Yes — I understand, sync publicly'));
@@ -227,8 +236,9 @@ void main() {
   });
 
   testWidgets(
-      'F-R12b: a hanging apply never wedges the save — the settings are '
-      'committed and the screen pops', (tester) async {
+      'F-R12b/M-c: a hanging apply never wedges the save — the settings '
+      'are committed and the unconfirmed swap is surfaced inline',
+      (tester) async {
     final settings = SettingsRepository.instance;
     final apply = _ApplyProbe(future: Completer<void>().future);
 
@@ -236,22 +246,49 @@ void main() {
 
     expect(await settings.getFrigateUrl(), 'f-r12b.lan:50002',
         reason: 'the save is committed before the host swap returns');
-    expect(find.byType(ChainBackendScreen), findsNothing,
-        reason: 'the screen must not stay stuck when the host swap does '
-            'not return');
+    expect(find.byType(ChainBackendScreen), findsOneWidget,
+        reason: 'M-c: the screen must not pop silently on an unconfirmed '
+            'swap — the divergence is surfaced inline');
+    expect(find.text(backendApplyDivergenceMessage), findsOneWidget);
     expect(apply.calls, 1);
   });
 
+  // M-c (review t_a38b7193): a failed apply after a committed save is a
+  // settings/scanner divergence — it must be user-visible inline, never a
+  // silent pop. RED against the base: the screen pops with no feedback.
   testWidgets(
-      'a throwing apply still pops the screen after the save is committed',
-      (tester) async {
-    final apply = _ApplyProbe(error: StateError('boom'));
+      'M-c: a failed apply after a committed save surfaces the divergence '
+      'inline and does not pretend success', (tester) async {
+    final settings = SettingsRepository.instance;
+    final apply = _ApplyProbe(error: StateError('host busy'));
 
     await saveFrigate(tester, apply: apply);
 
-    expect(find.byType(ChainBackendScreen), findsNothing);
     expect(apply.calls, 1);
-    expect(await SettingsRepository.instance.getChainBackend(),
-        ChainBackendKind.frigate);
+    expect(await settings.getChainBackend(), ChainBackendKind.frigate,
+        reason: 'the save itself is committed before the apply');
+    expect(find.byType(ChainBackendScreen), findsOneWidget,
+        reason: 'a failed apply must not pop silently — the screen stays '
+            'open with the divergence message');
+    expect(
+        find.text('Saved, but the running scanner could not be switched — '
+            'it will switch on next service start'),
+        findsOneWidget,
+        reason: 'the divergence is user-visible inline, not a log line');
+  });
+
+  // M-c service-path variant: the typed not-delivered result (no live
+  // service to receive the request) is surfaced the same way as a thrown
+  // apply — the committed setting and the scanner diverge.
+  testWidgets(
+      'M-c: a not-delivered apply (service path) surfaces the divergence '
+      'inline', (tester) async {
+    final apply = _ApplyProbe(result: BackendApplyResult.noService);
+
+    await saveFrigate(tester, apply: apply);
+
+    expect(apply.calls, 1);
+    expect(find.byType(ChainBackendScreen), findsOneWidget);
+    expect(find.text(backendApplyDivergenceMessage), findsOneWidget);
   });
 }

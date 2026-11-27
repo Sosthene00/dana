@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:danawallet/services/backend_apply_result.dart';
 import 'package:danawallet/services/sync_service.dart';
 import 'package:danawallet/states/chain_state.dart';
 import 'package:danawallet/states/frigate_state.dart';
@@ -75,8 +76,9 @@ class SyncOrchestrator {
   }
 
   /// Settings saved a backend. The host that holds the writer lease swaps
-  /// scanners; this isolate does not start a second one.
-  Future<void> applyBackend() => _service.applyBackend();
+  /// scanners; this isolate does not start a second one. Typed result
+  /// (M-c): not-delivered outcomes name their reason for the caller.
+  Future<BackendApplyResult> applyBackend() => _service.applyBackend();
 
   Future<void> stop() async {
     if (!_running) return;

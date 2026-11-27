@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:danawallet/constants.dart';
+import 'package:danawallet/services/backend_apply_result.dart';
 import 'package:danawallet/services/sync_task_handler.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
@@ -121,12 +122,17 @@ class ForegroundSyncService {
 
   /// Ask the live foreground service to apply the committed backend.
   /// The service host stops its current scanner and starts the one the
-  /// settings now name. Returns true when the request was delivered — the
-  /// caller must not also start a scanner in this isolate.
-  static Future<bool> requestApplyBackend() async {
-    if (!Platform.isAndroid) return false;
-    if (!await FlutterForegroundTask.isRunningService) return false;
+  /// settings now name. Returns [BackendApplyResult.delivered] when the
+  /// request was handed to a running service — the caller must not also
+  /// start a scanner in this isolate. A not-delivered result names the
+  /// reason (M-c: the caller surfaces the divergence, never silently
+  /// drops it).
+  static Future<BackendApplyResult> requestApplyBackend() async {
+    if (!Platform.isAndroid) return BackendApplyResult.noService;
+    if (!await FlutterForegroundTask.isRunningService) {
+      return BackendApplyResult.noService;
+    }
     FlutterForegroundTask.sendDataToTask({bgKeyApplyBackend: true});
-    return true;
+    return BackendApplyResult.delivered;
   }
 }

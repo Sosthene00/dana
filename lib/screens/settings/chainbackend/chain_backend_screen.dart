@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:danawallet/global_functions.dart';
 import 'package:danawallet/repositories/frigate_disclosure_repository.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
+import 'package:danawallet/services/backend_apply_result.dart';
 import 'package:danawallet/services/frigate_url_probe.dart';
 import 'package:danawallet/services/sync_orchestrator.dart';
 import 'package:danawallet/states/chain_state.dart';
@@ -33,8 +34,9 @@ class ChainBackendScreen extends StatefulWidget {
   final Duration applyTimeout;
 
   /// Test seam: the one command that asks the sync host to swap scanners.
-  /// Production uses [SyncOrchestrator.applyBackend].
-  final Future<void> Function()? applyBackend;
+  /// Production uses [SyncOrchestrator.applyBackend]. Typed result (M-c):
+  /// not-delivered outcomes are surfaced inline, not dropped.
+  final Future<BackendApplyResult> Function()? applyBackend;
 
   @override
   State<ChainBackendScreen> createState() => _ChainBackendScreenState();
@@ -92,7 +94,7 @@ class _ChainBackendScreenState extends State<ChainBackendScreen> {
       await _settings.setBlindbitUrl(null);
       await _settings.setChainBackend(ChainBackendKind.blindbit);
       await chainState.resetBlindbitUrl();
-      await _applyCommittedBackend();
+      if (!await _applyCommittedBackend()) return;
       if (mounted) Navigator.of(context).pop();
       return;
     }
@@ -110,7 +112,7 @@ class _ChainBackendScreenState extends State<ChainBackendScreen> {
     await _settings.setBlindbitUrl(url);
     await _settings.setChainBackend(ChainBackendKind.blindbit);
     displayNotification('Setting blindbit url to $url');
-    await _applyCommittedBackend();
+    if (!await _applyCommittedBackend()) return;
     if (mounted) Navigator.of(context).pop();
   }
 
@@ -156,33 +158,49 @@ class _ChainBackendScreenState extends State<ChainBackendScreen> {
         'warning path');
 
     if (!mounted) return;
-    await _applyCommittedBackend();
+    if (!await _applyCommittedBackend()) return;
     if (mounted) Navigator.of(context).pop();
   }
 
   /// One command, both directions. The host that holds the lease swaps
-  /// scanners. A swap that does not return in time does not hold the screen.
-  Future<void> _applyCommittedBackend() async {
+  /// scanners. Returns true only when the apply is confirmed delivered;
+  /// a not-delivered outcome (service path dropped, host error, timeout)
+  /// is surfaced inline (M-c: never a silent pop) and the save button is
+  /// re-enabled so the user can retry.
+  Future<bool> _applyCommittedBackend() async {
+    bool applied;
     try {
-      await _apply().timeout(widget.applyTimeout);
+      final result = await _apply().timeout(widget.applyTimeout);
+      if (!result.isDelivered) {
+        Logger().w('applyBackend not delivered: ${result.name}');
+      }
+      applied = result.isDelivered;
     } on TimeoutException {
       Logger().w('applyBackend did not return within '
           '${widget.applyTimeout.inSeconds}s');
+      applied = false;
     } catch (e) {
       Logger().w('applyBackend after backend save failed: $e');
+      applied = false;
     }
+    if (!applied && mounted) {
+      setState(() {
+        _inlineError = backendApplyDivergenceMessage;
+        _saving = false;
+      });
+    }
+    return applied;
   }
 
-  Future<void> _apply() async {
+  Future<BackendApplyResult> _apply() async {
     final injected = widget.applyBackend;
     if (injected != null) {
-      await injected();
-      return;
+      return injected();
     }
-    if (!mounted) return;
+    if (!mounted) return BackendApplyResult.noService;
     final orchestrator = Provider.of<SyncOrchestrator?>(context, listen: false);
-    if (orchestrator == null) return;
-    await orchestrator.applyBackend();
+    if (orchestrator == null) return BackendApplyResult.noService;
+    return orchestrator.applyBackend();
   }
 
   @override

@@ -2,9 +2,11 @@ import 'dart:async';
 
 import 'package:danawallet/repositories/frigate_disclosure_repository.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
+import 'package:danawallet/services/backend_apply_result.dart';
 import 'package:danawallet/services/sync_orchestrator.dart';
 import 'package:danawallet/states/frigate_state.dart';
 import 'package:flutter/material.dart';
+import 'package:logger/logger.dart';
 import 'package:provider/provider.dart';
 
 /// B5.3: the BLOCKING two-harms public-backend warning. The harm text and
@@ -71,7 +73,13 @@ Future<bool> showFrigatePublicWarningDialog(BuildContext context) async {
 class FrigatePublicWarningWatcher extends StatefulWidget {
   final Widget child;
 
-  const FrigatePublicWarningWatcher({super.key, required this.child});
+  /// Test seam: the post-ack apply command. Production reads
+  /// [SyncOrchestrator] from the tree. Typed result (M-c): a
+  /// not-delivered apply is surfaced, never silently dropped.
+  final Future<BackendApplyResult> Function()? applyBackend;
+
+  const FrigatePublicWarningWatcher(
+      {super.key, required this.child, this.applyBackend});
 
   @override
   State<FrigatePublicWarningWatcher> createState() =>
@@ -124,8 +132,32 @@ class _FrigatePublicWarningWatcherState
     context.read<FrigateState>().setPublicWarningPending(false);
     // The host that holds the lease re-reads settings and starts the
     // subscription. This isolate does not start a second scanner.
+    // M-c: a failed apply after the ack must not silently pretend
+    // success — the divergence surfaces on the app's existing SnackBar
+    // error surface.
     try {
-      unawaited(context.read<SyncOrchestrator>().applyBackend());
-    } catch (_) {}
+      final result = await _applyBackend();
+      if (!result.isDelivered) {
+        Logger().w('applyBackend after the public-warning ack was not '
+            'delivered: ${result.name}');
+        _showDivergence();
+      }
+    } catch (e) {
+      Logger().w('applyBackend after the public-warning ack failed: $e');
+      _showDivergence();
+    }
+  }
+
+  Future<BackendApplyResult> _applyBackend() async {
+    final injected = widget.applyBackend;
+    if (injected != null) return injected();
+    return context.read<SyncOrchestrator>().applyBackend();
+  }
+
+  void _showDivergence() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      content: Text(backendApplyDivergenceMessage),
+    ));
   }
 }

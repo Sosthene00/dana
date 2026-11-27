@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:danawallet/constants.dart';
 import 'package:danawallet/repositories/settings_repository.dart';
+import 'package:danawallet/services/backend_apply_result.dart';
 import 'package:danawallet/services/foreground_sync_service.dart';
 import 'package:danawallet/services/frigate_subscription_controller.dart';
 import 'package:danawallet/services/service_liveness.dart';
@@ -144,18 +145,31 @@ class SyncService {
 
   /// Stop the occupant and start the scanner for the committed backend.
   /// The in-process host does this directly. Otherwise the request goes to
-  /// the foreground service, which holds the lease.
-  Future<void> applyBackend() async {
+  /// the foreground service, which holds the lease. The result is typed
+  /// (M-c): a not-delivered outcome names its reason so callers surface
+  /// the divergence instead of discarding a bool.
+  Future<BackendApplyResult> applyBackend() async {
     final kind = await SettingsRepository.instance.getChainBackend();
     if (kind != ChainBackendKind.blindbit) {
       _chainState.stopChainPoller();
     }
+    BackendApplyResult result;
     if (_appHost?.isRunning == true) {
-      await _appHost!.applyBackend();
+      try {
+        await _appHost!.applyBackend();
+        result = BackendApplyResult.delivered;
+      } catch (e, st) {
+        Logger().w('in-process applyBackend failed: $e\n$st');
+        result = BackendApplyResult.hostError;
+      }
     } else {
-      await ForegroundSyncService.requestApplyBackend();
+      // M-c: the service path is best-effort — a dying or not-yet-started
+      // service silently drops the request. Surface that instead of
+      // discarding it.
+      result = await ForegroundSyncService.requestApplyBackend();
     }
     await _alignWakePoller();
+    return result;
   }
 
   SyncScanner _buildAppScanner(ChainBackendKind kind, WriterLease lease) {
