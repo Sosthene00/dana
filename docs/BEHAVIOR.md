@@ -1,6 +1,9 @@
 # Dana Wallet — Frigate Backend Behavior Specification
 
-**Status: v1.4 (2026-11-26) — OWNER RULING R14: ONE shared sync checkpoint. Verbatim ruling:
+**Status: v1.5 (2026-11-26) — B1.7: one sync host, one scanner. A settings save of either
+backend is one apply command to the host that holds the writer lease. The Blindbit tip poller
+does not run while Frigate occupies the slot. Earlier status: v1.4 (2026-11-26) — OWNER RULING
+R14: ONE shared sync checkpoint. Verbatim ruling:
 "we should assume that whatever height is synced with one is ok with the other." B1.4/B1.5
 amended, B1.6 added: the frigate path ADVANCES the shared `lastscan` checkpoint monotonically
 (Confirmed blkheights; CaughtUp → last seen Tip) — a backend switch never rewinds it.
@@ -86,6 +89,15 @@ branch cut from `dev`.
   `Tip` height (quiet blocks: the spdk frigate scanner emits `Confirmed` only on discovery,
   so Tip→CaughtUp is the only quiet-chain source of the synced-through height). Mempool
   (`Unconfirmed`) events never touch the checkpoint.
+- **B1.7** One sync host holds one scanner. Startup reads the committed backend
+  once and starts that scanner only; the other is not constructed. A settings
+  save of either backend is one `applyBackend` command to the host that holds
+  the writer lease (extends R11, which was Frigate-only): the host stops the
+  occupant, including awaiting an in-flight Blindbit scan, then starts the
+  other scanner, and does not release the lease across the swap. The Blindbit
+  tip poller runs only while Blindbit occupies the slot and does not wake the
+  Frigate scanner. The writer lease is the isolate handoff (service vs app).
+  It does not select the backend.
 
 ## 2. Frigate subscription lifecycle — foreground service
 
@@ -99,7 +111,9 @@ branch cut from `dev`.
 - **B2.3** Single-writer rule: while the service is alive it is the SOLE writer of sync state.
   The app process takes over writing only after it confirms the service is down (probe
   mechanism specified in the implementation; a required sub-task of the spec pass — see
-  §9-O4). Concurrent writers of the same table are a spec violation.
+  §9-O4). Concurrent writers of the same table are a spec violation. The writer lease is
+  that isolate handoff. Which backend is active is the host's scanner slot (B1.7), not
+  the lease.
 - **B2.4** On any `Disconnected`: the service re-subscribes automatically. History replays from
   `start_height` (already-confirmed outputs are re-reported and deduped, never double-counted);
   the current mempool snapshot re-arrives in the subscribe response. There is no separate
@@ -218,10 +232,12 @@ branch cut from `dev`.
   warning (B5.3) before the save commits. (Owner ruling R12, 2026-11-18: "the warning window
   should be triggered by trying to save the frigate url with a 'public' setting.")
   The declaration takes effect IMMEDIATELY ON SAVE: a successful save (any declaration, private
-  or public) starts the frigate subscription in-session — the saved URL/declaration apply to the
-  subscription started by that save, without an app restart. With no wallet configured the start
-  no-ops ("frigate: no wallet, subscription not started"); writer-lease rules are untouched —
-  while the foreground service holds the lease the start stays read-only (B2.2/B2.3).
+  or public) is an `applyBackend` to the host that holds the writer lease (B1.7) — the saved
+  URL/declaration apply to the subscription started by that save, without an app restart. A
+  successful Blindbit save is the same command in the other direction. With no wallet configured
+  the start no-ops ("frigate: no wallet, subscription not started"); writer-lease rules are
+  untouched — while the foreground service holds the lease the app isolate stays read-only and
+  does not start a scanner (B2.2/B2.3).
   (Owner ruling R11, 2026-11-18: "modifying the settings to a frigate backend should trigger the
   subscription immediately, without having to restart the app.")
 - **B5.3** The one-time public warning **gates the SAVE**: on save with declaration = public,
@@ -244,7 +260,9 @@ branch cut from `dev`.
   pending URL at ack time.
 - **B5.5** While a custom backend URL is configured, the app talks to that endpoint only — no
   silent fallback to defaults. The chain tip comes ONLY from the selected backend's session;
-  foreign tips are rejected (carried from v0.1 B5.1-B5.2).
+  foreign tips are rejected (carried from v0.1 B5.1-B5.2). While Frigate is the scanner the
+  Blindbit tip poller does not run, and a missing Frigate tip stays unknown — it is not filled
+  from a Blindbit height. Fee quotes and broadcast stay on their existing chain-data endpoints.
 
 ## 6. Send / spend (unchanged by the restart; carried as contract)
 
@@ -364,7 +382,7 @@ existence by the audit pass.
 | B1.4 | PARTIAL — `test/services/sync_engine_backend_gate_test.dart::frigate committed: one heartbeat does no blindbit work` (no scan-range/DB write on the frigate heartbeat path; R14 amended: the frigate path's ONLY checkpoint write is the monotonic advance, covered by B1.6) + `test/repositories/frigate_candidates_test.dart::candidate rows never appear in owned_outputs` |
 | B1.5 | `test/services/sync_engine_backend_gate_test.dart::blindbit committed (positive control): the heartbeat scans` (frigate -> blindbit switch-back: the blindbit engine resumes untouched) + `test/services/sync_engine_backend_gate_test.dart::a committed blindbit wallet flips to frigate: no blindbit work after the flip and the fresh subscription starts from the same committed height` (blindbit -> frigate start_height leg: start_height = the committed height, no blindbit work after the flip, no wallet state rebuilt). R14: the height both legs share is the B1.6 checkpoint |
 | B1.6 | `test/services/frigate_event_handler_test.dart::FrigateEventHandler — shared sync checkpoint (R14) R14: a Confirmed event advances the shared lastscan checkpoint to its blkheight` (discovery leg) + `...R14: the checkpoint never rewinds (a lower height is ignored)` (monotonic guard; mutation-checked: a plain-set advanceLastSync makes it red) + `...R14: CaughtUp advances the checkpoint to the last seen Tip height` (quiet-block leg) + `...R14: CaughtUp without a Tip never moves the checkpoint` + `...R14: Unconfirmed (mempool) events never touch the checkpoint` |
-| B1.5 | `test/services/sync_engine_backend_gate_test.dart::blindbit committed (positive control): the heartbeat scans` (frigate -> blindbit switch-back: the blindbit engine resumes untouched) + `test/services/sync_engine_backend_gate_test.dart::a committed blindbit wallet flips to frigate: no blindbit work after the flip and the fresh subscription starts from the same committed height` (blindbit -> frigate start_height leg: start_height = the committed height, no blindbit work after the flip, no wallet state rebuilt) |
+| B1.7 | `test/services/sync_host_test.dart::startup constructs only the committed scanner` + `test/services/sync_host_test.dart::applyBackend stops the occupant before starting the other and does not release the lease` + `test/services/sync_host_test.dart::a live service lease keeps the app host from starting a scanner` + `test/services/sync_host_test.dart::a Blindbit write throws when a foreign lease is fresh` + `test/services/active_chain_tip_test.dart::frigate tip is used and a missing one is not filled from blindbit` + `test/services/active_chain_tip_test.dart::the blindbit offline banner is hidden while frigate is selected` + `test/services/sync_engine_backend_gate_test.dart::frigate committed: one heartbeat does no blindbit work` (the host, not the engine, is the gate) |
 | B2.1 | PARTIAL — start legs covered at the service-lifecycle seam (started/attached counters on the injected `ForegroundServiceAdapter`, not log text): `test/services/foreground_service_lifecycle_test.dart::wallet start starts the foreground service exactly once` + `test/services/foreground_service_lifecycle_test.dart::re-entry/navigation: a second wallet start while running never re-starts` + `test/services/foreground_service_lifecycle_test.dart::service already live (isolate restart, service survives): the fresh wallet start re-attaches, never re-starts` + `test/services/foreground_service_lifecycle_test.dart::service layer: startForeground onto a live service re-attaches without a second start request`; the survives-main-app-death leg is device-level and rides the B8.3 acceptance run |
 | B2.2 | `test/services/frigate_event_handler_test.dart::R3: a Confirmed history event writes the receipt into owned_outputs` + `test/services/frigate_event_handler_test.dart::B3.1: an Unconfirmed event creates pending candidate rows` + `test/services/sync_service_refresh_contract_test.dart::graduation message (bgKeyRefresh: full) triggers a full DB re-read` (the app READS, does not rescan) |
 | B2.3 | `test/services/writer_lease_test.dart::a live foreign writer holds the lease — the caller stays read-only` |
